@@ -1,0 +1,555 @@
+import { useState, useCallback } from "react";
+
+type KeyVersions = Record<string, string>;
+
+interface ConfigState {
+  apiKeys: string[];
+  serverPort: number;
+  keyNames: Record<string, KeyVersions>;
+}
+
+function generateHexKey(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function validateHexKey(hex: string): { valid: true } | { valid: false; error: string } {
+  const trimmed = hex.trim();
+  if (trimmed === "") return { valid: true };
+  if (trimmed.length !== 64) return { valid: false, error: "Key must be exactly 64 hex characters" };
+  if (!/^[0-9a-fA-F]+$/.test(trimmed)) return { valid: false, error: "Key must contain only hex characters (0-9, a-f)" };
+  return { valid: true };
+}
+
+function buildConfig(state: ConfigState): object {
+  const keys: Record<string, Record<string, string>> = {};
+  for (const [name, versions] of Object.entries(state.keyNames)) {
+    const filtered: Record<string, string> = {};
+    for (const [ver, hex] of Object.entries(versions)) {
+      if (hex.trim().length === 64 && /^[0-9a-fA-F]+$/.test(hex)) {
+        filtered[ver] = hex.toLowerCase();
+      }
+    }
+    if (Object.keys(filtered).length > 0) {
+      keys[name] = filtered;
+    }
+  }
+  return {
+    api_keys: state.apiKeys.filter((k) => k.trim() !== ""),
+    server_port: state.serverPort,
+    keys,
+  };
+}
+
+export default function ConfigMaker() {
+  const [apiKeys, setApiKeys] = useState<string[]>([""]);
+  const [serverPortInput, setServerPortInput] = useState("8080");
+  const [keyNames, setKeyNames] = useState<Record<string, KeyVersions>>({
+    vault: { "1": "" },
+  });
+  const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyStartVersionInput, setNewKeyStartVersionInput] = useState("1");
+  const [outputFormat, setOutputFormat] = useState<"json" | "base64">("json");
+  const [importInput, setImportInput] = useState("");
+  const [importFormat, setImportFormat] = useState<"json" | "base64">("json");
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const serverPortValidation = (() => {
+    const trimmed = serverPortInput.trim();
+    if (trimmed === "") return { valid: false as const, error: "Server port is required" };
+    const n = parseInt(trimmed, 10);
+    if (isNaN(n) || !Number.isInteger(Number(trimmed))) return { valid: false as const, error: "Server port must be a whole number" };
+    if (n < 1 || n > 65535) return { valid: false as const, error: "Server port must be between 1 and 65535" };
+    return { valid: true as const, value: n };
+  })();
+
+  const startVersionValidation = (() => {
+    const trimmed = newKeyStartVersionInput.trim();
+    if (trimmed === "") return { valid: false as const, error: "Start version is required" };
+    const n = parseInt(trimmed, 10);
+    if (isNaN(n) || !Number.isInteger(Number(trimmed))) return { valid: false as const, error: "Start version must be a positive integer" };
+    if (n < 1) return { valid: false as const, error: "Start version must be at least 1" };
+    return { valid: true as const, value: n };
+  })();
+
+  const updateApiKey = useCallback((i: number, v: string) => {
+    setApiKeys((prev) => {
+      const next = [...prev];
+      next[i] = v;
+      return next;
+    });
+  }, []);
+
+  const addApiKey = useCallback(() => {
+    setApiKeys((prev) => [...prev, ""]);
+  }, []);
+
+  const removeApiKey = useCallback((i: number) => {
+    setApiKeys((prev) => prev.filter((_, j) => j !== i));
+  }, []);
+
+  const addKeySet = useCallback(() => {
+    const name = newKeyName.trim();
+    if (!name) return;
+    if (!startVersionValidation.valid) return;
+    setKeyNames((prev) => ({ ...prev, [name]: { [String(startVersionValidation.value)]: "" } }));
+    setNewKeyName("");
+  }, [newKeyName, startVersionValidation]);
+
+  const removeKeySet = useCallback((name: string) => {
+    setKeyNames((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
+  }, []);
+
+  const updateEncKey = useCallback(
+    (keySet: string, version: string, value: string) => {
+      setKeyNames((prev) => ({
+        ...prev,
+        [keySet]: { ...prev[keySet], [version]: value },
+      }));
+    },
+    []
+  );
+
+  const addVersion = useCallback((keySet: string) => {
+    setKeyNames((prev) => {
+      const versions = prev[keySet] || {};
+      const nums = Object.keys(versions)
+        .map(Number)
+        .filter((n) => !isNaN(n));
+      const nextVer = nums.length === 0 ? 1 : Math.max(...nums) + 1;
+      return { ...prev, [keySet]: { ...versions, [String(nextVer)]: "" } };
+    });
+  }, []);
+
+  const removeVersion = useCallback((keySet: string, version: string) => {
+    setKeyNames((prev) => {
+      const versions = { ...prev[keySet] };
+      delete versions[version];
+      if (Object.keys(versions).length === 0) {
+        const next = { ...prev };
+        delete next[keySet];
+        return next;
+      }
+      return { ...prev, [keySet]: versions };
+    });
+  }, []);
+
+  const generateForVersion = useCallback((keySet: string, version: string) => {
+    setKeyNames((prev) => ({
+      ...prev,
+      [keySet]: { ...prev[keySet], [version]: generateHexKey() },
+    }));
+  }, []);
+
+  const serverPort = serverPortValidation.valid ? serverPortValidation.value : 0;
+  const hasValidKeys = (() => {
+    for (const versions of Object.values(keyNames)) {
+      for (const hex of Object.values(versions)) {
+        const v = validateHexKey(hex);
+        if (v.valid && hex.trim() !== "") return true;
+      }
+    }
+    return false;
+  })();
+  const configValid = serverPortValidation.valid && hasValidKeys;
+  const config = configValid ? buildConfig({ apiKeys, serverPort, keyNames }) : null;
+  const jsonStr = config !== null ? JSON.stringify(config, null, 2) : "";
+  const base64Str =
+    config !== null && typeof btoa !== "undefined"
+      ? (() => {
+          const bytes = new TextEncoder().encode(jsonStr);
+          let binary = "";
+          for (let i = 0; i < bytes.length; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          return btoa(binary);
+        })()
+      : "";
+
+  const output = configValid ? (outputFormat === "base64" ? base64Str : jsonStr) : "";
+
+  const copyToClipboard = useCallback(async () => {
+    await navigator.clipboard.writeText(output);
+  }, [output]);
+
+  const importConfig = useCallback(() => {
+    setImportError(null);
+    let jsonStr: string;
+    try {
+      if (importFormat === "base64") {
+        const binary = atob(importInput.trim());
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        jsonStr = new TextDecoder().decode(bytes);
+      } else {
+        jsonStr = importInput.trim();
+      }
+      const parsed = JSON.parse(jsonStr) as unknown;
+      if (typeof parsed !== "object" || parsed === null) {
+        throw new Error("Config must be a JSON object");
+      }
+      const obj = parsed as Record<string, unknown>;
+
+      const apiKeysArr = obj.api_keys;
+      if (!Array.isArray(apiKeysArr)) {
+        throw new Error("api_keys must be an array");
+      }
+      const keys = apiKeysArr.filter((k): k is string => typeof k === "string");
+
+      const serverPortVal = obj.server_port;
+      const port =
+        typeof serverPortVal === "number" && serverPortVal >= 1 && serverPortVal <= 65535
+          ? serverPortVal
+          : 8080;
+
+      const keysObj = obj.keys;
+      if (typeof keysObj !== "object" || keysObj === null) {
+        throw new Error("keys must be an object");
+      }
+      const keyNames: Record<string, KeyVersions> = {};
+      for (const [name, versions] of Object.entries(keysObj)) {
+        if (typeof versions !== "object" || versions === null) continue;
+        const vers: KeyVersions = {};
+        for (const [ver, hex] of Object.entries(versions)) {
+          if (typeof hex === "string" && hex.length === 64 && /^[0-9a-fA-F]+$/.test(hex)) {
+            vers[ver] = hex;
+          }
+        }
+        if (Object.keys(vers).length > 0) {
+          keyNames[name] = vers;
+        }
+      }
+
+      setApiKeys(keys.length > 0 ? keys : [""]);
+      setServerPortInput(String(port));
+      setKeyNames(Object.keys(keyNames).length > 0 ? keyNames : { vault: { "1": "" } });
+      setImportInput("");
+      setImportError(null);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Invalid config");
+    }
+  }, [importInput, importFormat]);
+
+  return (
+    <article className="max-w-none">
+      <h1 className="text-3xl font-bold mb-2">Config Maker</h1>
+      <p className="text-[var(--text-muted)] mb-8">
+        Build your SimpleVault config interactively. Import existing configs to edit, or export as JSON or Base64.
+      </p>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">
+          Import
+        </h2>
+        <p className="text-[var(--text-muted)] text-sm mb-4">
+          Paste a saved config (JSON or Base64) to load and edit it.
+        </p>
+        <div className="flex gap-4 mb-3">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="import-format"
+              checked={importFormat === "json"}
+              onChange={() => setImportFormat("json")}
+              className="accent-[var(--accent)]"
+            />
+            <span>JSON</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="import-format"
+              checked={importFormat === "base64"}
+              onChange={() => setImportFormat("base64")}
+              className="accent-[var(--accent)]"
+            />
+            <span>Base64</span>
+          </label>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <textarea
+            value={importInput}
+            onChange={(e) => {
+              setImportInput(e.target.value);
+              setImportError(null);
+            }}
+            placeholder={importFormat === "base64" ? "Paste Base64-encoded config..." : 'Paste JSON config (e.g. {"api_keys":[],"server_port":8080,"keys":{}})'}
+            rows={4}
+            className="flex-1 min-w-0 bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg px-4 py-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] resize-y"
+          />
+          <button
+            type="button"
+            onClick={importConfig}
+            disabled={!importInput.trim()}
+            className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--accent-muted)] transition-colors shrink-0 self-start"
+          >
+            Import
+          </button>
+        </div>
+        {importError && (
+          <p className="mt-2 text-sm text-red-400">
+            {importError}
+          </p>
+        )}
+      </section>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">
+          API Keys
+        </h2>
+        <p className="text-[var(--text-muted)] text-sm mb-4">
+          Leave empty for no authentication. Add keys to require auth on all
+          requests.
+        </p>
+        <div className="space-y-3">
+          {apiKeys.map((key, i) => (
+            <div key={i} className="flex gap-2 items-center">
+              <input
+                type="text"
+                value={key}
+                onChange={(e) => updateApiKey(i, e.target.value)}
+                placeholder="API key (optional)"
+                className="flex-1 bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg px-4 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              />
+              <button
+                type="button"
+                onClick={() => removeApiKey(i)}
+                className="px-3 py-2 rounded-lg text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                aria-label="Remove"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={addApiKey}
+            className="text-sm text-[var(--accent)] hover:text-[var(--accent-muted)]"
+          >
+            + Add API key
+          </button>
+        </div>
+      </section>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">
+          Server Port
+        </h2>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={serverPortInput}
+          onChange={(e) => setServerPortInput(e.target.value)}
+          placeholder="8080"
+          className={`w-32 bg-[var(--surface-elevated)] border rounded-lg px-4 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] ${
+            !serverPortValidation.valid ? "border-red-500 focus:ring-red-500" : "border-[var(--border)]"
+          }`}
+        />
+        {!serverPortValidation.valid && (
+          <p className="mt-2 text-sm text-red-400">{serverPortValidation.error}</p>
+        )}
+      </section>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">
+          Encryption Keys
+        </h2>
+        <p className="text-[var(--text-muted)] text-sm mb-2">
+          Each key set (e.g. <code className="bg-black/30 px-1 rounded">vault</code>) can have multiple versions. Keys must be 64 hex characters.
+        </p>
+        <p className="text-[var(--text-muted)] text-sm mb-4">
+          Version numbers don&apos;t need to be sequential. Older keys can be deprecated and removed from the config over time; only keep the versions you still need for decryption.
+        </p>
+
+        <div className="flex flex-col gap-3 mb-6">
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              value={newKeyName}
+              onChange={(e) => setNewKeyName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addKeySet()}
+              placeholder="Key set name (e.g. vault)"
+              className="flex-1 min-w-0 bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg px-4 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+            <div className="flex flex-col gap-1 shrink-0">
+              <div className="flex items-center gap-2">
+                <label htmlFor="start-ver" className="text-sm text-[var(--text-muted)] whitespace-nowrap">
+                  Start version:
+                </label>
+                <input
+                  id="start-ver"
+                  type="text"
+                  inputMode="numeric"
+                  value={newKeyStartVersionInput}
+                  onChange={(e) => setNewKeyStartVersionInput(e.target.value)}
+                  placeholder="1"
+                  className={`w-20 bg-[var(--surface-elevated)] border rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] ${
+                    !startVersionValidation.valid ? "border-red-500 focus:ring-red-500" : "border-[var(--border)]"
+                  }`}
+                />
+              </div>
+              {!startVersionValidation.valid && (
+                <p className="text-sm text-red-400">{startVersionValidation.error}</p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={addKeySet}
+              disabled={!newKeyName.trim() || !startVersionValidation.valid}
+              className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--accent-muted)] transition-colors shrink-0"
+            >
+              Add key set
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          {Object.entries(keyNames).map(([name, versions]) => (
+            <div
+              key={name}
+              className="border border-[var(--border)] rounded-lg p-5 bg-[var(--surface-elevated)]"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-mono font-semibold text-[var(--accent)]">
+                  {name}
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => removeKeySet(name)}
+                  className="text-sm text-[var(--text-muted)] hover:text-red-400"
+                >
+                  Remove
+                </button>
+              </div>
+              <div className="space-y-3">
+                {Object.entries(versions).map(([ver, hex]) => {
+                  const hexValidation = validateHexKey(hex);
+                  return (
+                  <div key={ver} className="flex flex-col gap-1">
+                    <div className="flex flex-wrap gap-2 items-center">
+                      <span className="w-8 shrink-0 font-mono text-[var(--text-muted)]">
+                        v{ver}
+                      </span>
+                      <input
+                        type="text"
+                        value={hex}
+                        onChange={(e) =>
+                          updateEncKey(name, ver, e.target.value)
+                        }
+                        placeholder="64 hex chars"
+                        className={`flex-1 min-w-0 bg-black/30 border rounded px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] ${
+                          !hexValidation.valid && hex.trim() !== ""
+                            ? "border-red-500 focus:ring-red-500"
+                            : "border-[var(--border)]"
+                        }`}
+                      />
+                      <div className="flex shrink-0 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => generateForVersion(name, ver)}
+                        className="px-3 py-2 rounded text-sm bg-[var(--accent)]/20 text-[var(--accent)] hover:bg-[var(--accent)]/30"
+                      >
+                        Generate
+                      </button>
+                      {Object.keys(versions).length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeVersion(name, ver)}
+                          className="px-2 py-1 rounded text-[var(--text-muted)] hover:text-red-400"
+                          aria-label="Remove version"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {!hexValidation.valid && hex.trim() !== "" && (
+                    <p className="text-sm text-red-400 pl-10">{hexValidation.error}</p>
+                  )}
+                </div>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => addVersion(name)}
+                  className="text-sm text-[var(--accent)] hover:text-[var(--accent-muted)]"
+                >
+                  + Add version
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">
+          Export
+        </h2>
+        <div className="flex gap-4 mb-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="format"
+              checked={outputFormat === "json"}
+              onChange={() => setOutputFormat("json")}
+              className="accent-[var(--accent)]"
+            />
+            <span>JSON</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="format"
+              checked={outputFormat === "base64"}
+              onChange={() => setOutputFormat("base64")}
+              className="accent-[var(--accent)]"
+            />
+            <span>Base64</span>
+          </label>
+        </div>
+        <p className="text-[var(--text-muted)] text-sm mb-4">
+          {outputFormat === "base64"
+            ? "Base64-encoded config for env vars, secrets, or compact storage."
+            : "Pretty-printed JSON config file."}
+        </p>
+        <div className="relative min-w-0">
+          {!configValid ? (
+            <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-4 text-red-400 text-sm space-y-1">
+              {!serverPortValidation.valid && <p>{serverPortValidation.error}</p>}
+              {serverPortValidation.valid && !hasValidKeys && (
+                <p>At least one valid encryption key (64 hex characters) is required.</p>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {output && (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={copyToClipboard}
+                    className="px-3 py-1.5 rounded text-sm bg-[var(--accent)]/20 text-[var(--accent)] hover:bg-[var(--accent)]/30"
+                  >
+                    Copy
+                  </button>
+                </div>
+              )}
+              <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono max-h-80 overflow-y-auto">
+                {output || "Add at least one encryption key to generate config."}
+              </pre>
+            </div>
+          )}
+        </div>
+      </section>
+    </article>
+  );
+}
