@@ -69,7 +69,7 @@ export default function ApiDoc() {
               <p className="text-sm font-medium mb-2">Request body:</p>
               <pre className="bg-black/30 rounded p-4 text-sm font-mono mb-4">{`{ "ciphertext": "v1:..." }`}</pre>
               <p className="text-sm font-medium mb-2">Response:</p>
-              <pre className="bg-black/30 rounded p-4 text-sm font-mono">{`{ "ciphertext": "v1:..." }`}</pre>
+              <pre className="bg-black/30 rounded p-4 text-sm font-mono">{`{ "ciphertext": "v3:..." }`}</pre>
             </div>
           </div>
 
@@ -109,7 +109,7 @@ export default function ApiDoc() {
           Ciphertext strings use the format:
         </p>
         <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 text-sm font-mono">
-{`v1:<hex_ciphertext>:<hex_nonce>`}
+          {`v1:<hex_ciphertext>:<hex_nonce>`}
         </pre>
         <p className="text-[var(--text-muted)] text-sm mt-2">
           Encryption uses AES-256-GCM. The key version is embedded so the server knows which key to use for decryption.
