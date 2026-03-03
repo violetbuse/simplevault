@@ -14,6 +14,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+echo "=========================================="
+echo "0. Version check"
+echo "=========================================="
+./check-version.sh
+
 NO_BUILD=false
 for arg in "$@"; do
   case "$arg" in

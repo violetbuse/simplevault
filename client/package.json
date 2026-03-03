@@ -36,7 +36,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/simplevault"
+    "url": "https://github.com/violetbuse/simplevault"
   },
   "engines": {
     "node": ">=18"

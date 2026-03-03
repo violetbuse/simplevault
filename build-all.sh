@@ -7,7 +7,7 @@
 #   4. Client library
 #
 # Usage: ./build-all.sh [--docker-tag TAG]
-#   --docker-tag TAG  Use TAG for the Docker image (default: simplevault:latest)
+#   --docker-tag TAG  Use TAG for the Docker image (default: simplevault:$(cat VERSION))
 #
 
 set -e
@@ -15,7 +15,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-DOCKER_TAG="simplevault:latest"
+echo "=========================================="
+echo "0. Version check"
+echo "=========================================="
+./check-version.sh
+
+VERSION=$(cat VERSION | tr -d '[:space:]')
+DOCKER_TAG="simplevault:${VERSION}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --docker-tag)
@@ -31,7 +37,7 @@ done
 echo "=========================================="
 echo "1. Docker image (Rust release binary)"
 echo "=========================================="
-docker build -t "$DOCKER_TAG" .
+docker build --build-arg SIMPLEVAULT_VERSION="$VERSION" -t "$DOCKER_TAG" .
 
 echo ""
 echo "=========================================="

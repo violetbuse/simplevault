@@ -1,0 +1,16 @@
+{
+    "$schema": "./node_modules/wrangler/config-schema.json",
+    "name": "simplevault-docs",
+    "compatibility_date": "2026-03-03",
+    "assets": {
+        "not_found_handling": "single-page-application"
+    },
+    "main": "./worker/index.ts",
+    "workers_dev": true,
+    "routes": [
+        {
+            "pattern": "simplevault.viowet.com",
+            "custom_domain": true
+        }
+    ]
+}

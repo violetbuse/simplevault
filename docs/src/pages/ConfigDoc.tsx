@@ -40,7 +40,7 @@ export default function ConfigDoc() {
           <div className="border border-[var(--border)] rounded-lg p-5 bg-[var(--surface-elevated)]">
             <h3 className="font-mono font-semibold text-[var(--accent)] mb-2">server_port</h3>
             <p className="text-[var(--text-muted)] text-sm">
-              Port number (u16) the HTTP server listens on. Default is typically 8080.
+              Port number (u16) the HTTP server listens on. Default is typically 8080. Can be overridden at runtime with <code className="bg-black/30 px-1 rounded">--port</code> / <code className="bg-black/30 px-1 rounded">-p</code>.
             </p>
           </div>
 
@@ -80,10 +80,16 @@ export default function ConfigDoc() {
           Config can be read from a file or from an environment variable. By default, the config source (file or env var) is deleted/unset after reading for security. Use <code className="bg-black/30 px-1 rounded">--keep-config</code> to retain it.
         </p>
 
+        <h3 className="font-semibold mb-2 text-[var(--accent)]">CLI options</h3>
+        <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1 mb-4">
+          <li><code className="bg-black/30 px-1 rounded">--port</code> / <code className="bg-black/30 px-1 rounded">-p</code> — Port to listen on (overrides <code className="bg-black/30 px-1 rounded">server_port</code> from config)</li>
+        </ul>
+
         <h3 className="font-semibold mb-2 text-[var(--accent)]">From file</h3>
         <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-4">
 {`simplevault config.json
-simplevault --keep-config config.json`}
+simplevault --keep-config config.json
+simplevault config.json --port 3000`}
         </pre>
 
         <h3 className="font-semibold mb-2 text-[var(--accent)]">From environment variable</h3>
@@ -101,6 +107,34 @@ simplevault --config-env SIMPLEVAULT_CONFIG --keep-config`}
         </p>
         <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono">
 {`simplevault config.json --delete-env SIMPLEVAULT_CONFIG_BACKUP`}
+        </pre>
+      </section>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Docker</h2>
+        <p className="text-[var(--text-muted)] mb-4">
+          The Docker image expects config via the <code className="bg-black/30 px-1 rounded">SIMPLEVAULT_CONFIG</code> environment variable (base64-encoded JSON). Use the Config Maker to export your config as Base64.
+        </p>
+
+        <h3 className="font-semibold mb-2 text-[var(--accent)]">Basic run</h3>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-4">
+{`docker run -e SIMPLEVAULT_CONFIG="<base64>" -p 8080:8080 simplevault`}
+        </pre>
+
+        <h3 className="font-semibold mb-2 text-[var(--accent)]">Custom port</h3>
+        <p className="text-[var(--text-muted)] mb-2 text-sm">
+          Use <code className="bg-black/30 px-1 rounded">--port</code> to listen on a different port inside the container, then map it with Docker&apos;s <code className="bg-black/30 px-1 rounded">-p</code>.
+        </p>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-4">
+{`docker run -e SIMPLEVAULT_CONFIG="<base64>" -p 3000:3000 simplevault --config-env SIMPLEVAULT_CONFIG --port 3000`}
+        </pre>
+
+        <h3 className="font-semibold mb-2 text-[var(--accent)]">Mounted config file</h3>
+        <p className="text-[var(--text-muted)] mb-2 text-sm">
+          Alternatively, mount a config file and pass its path.
+        </p>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono">
+{`docker run -v /path/to/config.json:/app/config.json -p 8080:8080 simplevault /app/config.json`}
         </pre>
       </section>
     </article>

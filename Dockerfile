@@ -1,4 +1,6 @@
 # Build stage
+# Version is passed as build-arg from build-all.sh (reads VERSION file)
+ARG SIMPLEVAULT_VERSION=0.1.0
 FROM rust:1.85-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,6 +29,8 @@ RUN touch src/main.rs && cargo build --release && \
 
 # Runtime stage - minimal debian-slim
 FROM debian:bookworm-slim
+ARG SIMPLEVAULT_VERSION=0.1.0
+LABEL org.opencontainers.image.version="${SIMPLEVAULT_VERSION}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
