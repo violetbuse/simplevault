@@ -3,7 +3,7 @@ export default function ConfigDoc() {
     <article className="prose prose-invert max-w-none">
       <h1 className="text-3xl font-bold mb-2">Configuration File</h1>
       <p className="text-[var(--text-muted)] mb-8">
-        The SimpleVault server is configured via a JSON file passed at startup.
+        The SimpleVault server is configured via a JSON file or a base64-encoded JSON environment variable passed at startup.
       </p>
 
       <section className="mb-10">
@@ -77,11 +77,30 @@ export default function ConfigDoc() {
       <section className="mb-10">
         <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Usage</h2>
         <p className="text-[var(--text-muted)] mb-4">
-          Pass the config path when starting the server. By default, the config file is deleted after reading (for security). Use <code className="bg-black/30 px-1 rounded">--keep-config</code> to retain it.
+          Config can be read from a file or from an environment variable. By default, the config source (file or env var) is deleted/unset after reading for security. Use <code className="bg-black/30 px-1 rounded">--keep-config</code> to retain it.
         </p>
-        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono">
+
+        <h3 className="font-semibold mb-2 text-[var(--accent)]">From file</h3>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-4">
 {`simplevault config.json
 simplevault --keep-config config.json`}
+        </pre>
+
+        <h3 className="font-semibold mb-2 text-[var(--accent)]">From environment variable</h3>
+        <p className="text-[var(--text-muted)] mb-2 text-sm">
+          The env var must contain base64-encoded JSON (same format as the file). Use the Config Maker to export as Base64.
+        </p>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-4">
+{`simplevault --config-env SIMPLEVAULT_CONFIG
+simplevault --config-env SIMPLEVAULT_CONFIG --keep-config`}
+        </pre>
+
+        <h3 className="font-semibold mb-2 text-[var(--accent)]">Delete file and env var</h3>
+        <p className="text-[var(--text-muted)] mb-2 text-sm">
+          When reading from file, use <code className="bg-black/30 px-1 rounded">--delete-env VAR</code> to also unset an environment variable after reading (e.g. a backup copy of the config).
+        </p>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono">
+{`simplevault config.json --delete-env SIMPLEVAULT_CONFIG_BACKUP`}
         </pre>
       </section>
     </article>

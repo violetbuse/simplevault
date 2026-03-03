@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aes-gcm = "0.10"
+base64 = "0.22"
 form_urlencoded = "1.2"
 anyhow = "1.0.102"
 clap = { version = "4.4", features = ["derive"] }

@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::Engine;
+
 use rand::Rng;
 use secrets::{SecretBox, SecretVec};
 use serde::{
@@ -15,7 +17,7 @@ use tokio::{
     fs::{File, remove_file},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, Zeroizing, ZeroizeOnDrop};
 
 use crate::crypto::EncryptionKey;
 
@@ -151,4 +153,36 @@ pub async fn delete_config(path: &Path) -> Result<(), anyhow::Error> {
     file.sync_all().await?;
     remove_file(path).await?;
     Ok(())
+}
+
+/// Read config from an environment variable containing base64-encoded JSON.
+/// The env var value must be the same JSON format as the file config.
+/// If `delete_after` is true, unsets the environment variable after reading.
+pub fn read_config_from_env(env_var_name: &str, delete_after: bool) -> Result<Config, anyhow::Error> {
+    let encoded = std::env::var(env_var_name)
+        .map_err(|_| anyhow::anyhow!("Environment variable '{}' is not set", env_var_name))?;
+
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&encoded)
+        .map_err(|e| anyhow::anyhow!("Invalid base64 in env var '{}': {}", env_var_name, e))?;
+
+    let json_str = Zeroizing::new(
+        String::from_utf8(decoded)
+            .map_err(|e| anyhow::anyhow!("Env var '{}' is not valid UTF-8: {}", env_var_name, e))?,
+    );
+
+    let config: Config = serde_json::from_str(&*json_str)
+        .map_err(|e| anyhow::anyhow!("Invalid config JSON in env var '{}': {}", env_var_name, e))?;
+
+    if delete_after {
+        unset_env_var(env_var_name);
+    }
+
+    Ok(config)
+}
+
+/// Unset an environment variable. Used to clear secrets from the process environment.
+pub fn unset_env_var(env_var_name: &str) {
+    // SAFETY: We are the sole owner of the process environment during startup.
+    unsafe { std::env::remove_var(env_var_name) }
 }
