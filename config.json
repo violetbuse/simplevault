@@ -1,7 +1,5 @@
 {
-    "api_keys": [
-        "1234567890"
-    ],
+    "api_keys": [],
     "server_port": 8080,
     "keys": {
         "vault": {

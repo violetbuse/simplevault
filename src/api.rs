@@ -1,16 +1,16 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::config::Config;
+use crate::crypto::CipherText;
 use axum::{
-    extract::{Path, State},
-    http::{header, Request, StatusCode},
+    Json, Router,
+    extract::{FromRequest, Path, Request, State, rejection::JsonRejection},
+    http::{Request as HttpRequest, StatusCode, header},
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
-use crate::config::Config;
-use crate::crypto::CipherText;
 use secrets::SecretVec;
 use serde::de::{Deserializer, Error as SerdeError, Visitor};
 use serde::ser::SerializeStruct;
@@ -40,8 +40,9 @@ impl Serialize for PlainTextObject {
     {
         let mut st = serializer.serialize_struct("PlainTextObject", 1)?;
         let bytes = self.plaintext.borrow();
-        let text = std::str::from_utf8(bytes.as_ref())
-            .map_err(|e| serde::ser::Error::custom(format!("plaintext is not valid UTF-8: {}", e)))?;
+        let text = std::str::from_utf8(bytes.as_ref()).map_err(|e| {
+            serde::ser::Error::custom(format!("plaintext is not valid UTF-8: {}", e))
+        })?;
         st.serialize_field("plaintext", text)?;
         st.end()
     }
@@ -93,7 +94,7 @@ struct AppState {
     config: Arc<Config>,
 }
 
-fn extract_api_key_from_request<B>(req: &Request<B>) -> Option<String> {
+fn extract_api_key_from_request<B>(req: &HttpRequest<B>) -> Option<String> {
     if let Some(auth) = req.headers().get(header::AUTHORIZATION) {
         if let Ok(s) = auth.to_str() {
             if let Some(key) = s.strip_prefix("Bearer ") {
@@ -118,7 +119,7 @@ fn extract_api_key_from_request<B>(req: &Request<B>) -> Option<String> {
 
 async fn auth_middleware(
     State(state): State<AppState>,
-    request: Request<axum::body::Body>,
+    request: HttpRequest<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
     if !state.config.api_keys_required() {
@@ -156,6 +157,44 @@ where
     }
 }
 
+/// JSON extractor that returns `{ "error": "..." }` on rejection (matches dev server).
+struct ApiJsonRejection(JsonRejection);
+
+impl IntoResponse for ApiJsonRejection {
+    fn into_response(self) -> axum::response::Response {
+        let status = self.0.status();
+        let body = self.0.body_text();
+        (status, Json(serde_json::json!({ "error": body }))).into_response()
+    }
+}
+
+/// JSON extractor with JSON-formatted error responses.
+#[derive(Debug, Clone, Copy)]
+struct ApiJson<T>(T);
+
+impl<T> std::ops::Deref for ApiJson<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T, S> FromRequest<S> for ApiJson<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiJsonRejection;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(inner)) => Ok(ApiJson(inner)),
+            Err(rejection) => Err(ApiJsonRejection(rejection)),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct KeyNamePath {
     key_name: String,
@@ -164,7 +203,7 @@ struct KeyNamePath {
 async fn encrypt_handler(
     Path(KeyNamePath { key_name }): Path<KeyNamePath>,
     State(state): State<AppState>,
-    Json(body): Json<PlainTextObject>,
+    ApiJson(body): ApiJson<PlainTextObject>,
 ) -> Result<Json<CipherTextObject>, ApiError> {
     let (version, key) = state
         .config
@@ -177,7 +216,7 @@ async fn encrypt_handler(
 async fn decrypt_handler(
     Path(KeyNamePath { key_name }): Path<KeyNamePath>,
     State(state): State<AppState>,
-    Json(body): Json<CipherTextObject>,
+    ApiJson(body): ApiJson<CipherTextObject>,
 ) -> Result<Json<PlainTextObject>, ApiError> {
     let key = state
         .config
@@ -212,7 +251,7 @@ async fn version_handler(
 async fn rotate_handler(
     Path(KeyNamePath { key_name }): Path<KeyNamePath>,
     State(state): State<AppState>,
-    Json(body): Json<CipherTextObject>,
+    ApiJson(body): ApiJson<CipherTextObject>,
 ) -> Result<Json<CipherTextObject>, ApiError> {
     let old_key = state
         .config
@@ -249,11 +288,14 @@ fn build_router(config: Config) -> Router {
         .with_state(state)
 }
 
-pub async fn run_server(config: Config) -> Result<(), anyhow::Error> {
-    let server_port = config.server_port;
+pub async fn run_server(config: Config, port_override: Option<u16>) -> Result<(), anyhow::Error> {
+    let server_port = port_override.unwrap_or(config.server_port);
     let app = build_router(config);
-    let listener =
-        tokio::net::TcpListener::bind(format!("0.0.0.0:{}", server_port)).await?;
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", server_port)).await?;
+    println!(
+        "SimpleVault server listening on http://0.0.0.0:{}",
+        server_port
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -415,7 +457,13 @@ mod tests {
     }
 
     async fn read_body(response: axum::response::Response) -> Vec<u8> {
-        response.into_body().collect().await.unwrap().to_bytes().to_vec()
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec()
     }
 
     // --- Auth middleware tests ---
@@ -607,7 +655,9 @@ mod tests {
         let app = build_router(config_without_vault_key());
         let req = Request::post("/v1/vault/decrypt")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"ciphertext":"v1:deadbeef:000000000000000000000000"}"#))
+            .body(Body::from(
+                r#"{"ciphertext":"v1:deadbeef:000000000000000000000000"}"#,
+            ))
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -632,7 +682,9 @@ mod tests {
     #[tokio::test]
     async fn version_returns_latest() {
         let app = build_router(config_with_key_versions());
-        let req = Request::get("/v1/vault/version").body(Body::empty()).unwrap();
+        let req = Request::get("/v1/vault/version")
+            .body(Body::empty())
+            .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = read_body(response).await;
@@ -643,7 +695,9 @@ mod tests {
     #[tokio::test]
     async fn version_returns_one_when_single_version() {
         let app = build_router(config_no_auth());
-        let req = Request::get("/v1/vault/version").body(Body::empty()).unwrap();
+        let req = Request::get("/v1/vault/version")
+            .body(Body::empty())
+            .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = read_body(response).await;
@@ -654,7 +708,9 @@ mod tests {
     #[tokio::test]
     async fn version_key_not_found() {
         let app = build_router(config_without_vault_key());
-        let req = Request::get("/v1/vault/version").body(Body::empty()).unwrap();
+        let req = Request::get("/v1/vault/version")
+            .body(Body::empty())
+            .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = read_body(response).await;
@@ -689,7 +745,10 @@ mod tests {
         let body_str = String::from_utf8(body).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&body_str).unwrap();
         let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
-        assert!(ciphertext.contains("v1:"), "should be encrypted with version 1");
+        assert!(
+            ciphertext.contains("v1:"),
+            "should be encrypted with version 1"
+        );
 
         let app_v1_v2 = build_router(config_with_key_versions());
         let rotate_req = Request::post("/v1/vault/rotate")
@@ -701,7 +760,10 @@ mod tests {
         let rot_body = read_body(rotate_resp).await;
         let rot_parsed: serde_json::Value = serde_json::from_slice(&rot_body).unwrap();
         let new_ct = rot_parsed["ciphertext"].as_str().unwrap();
-        assert!(new_ct.contains("v2:"), "should be re-encrypted with version 2");
+        assert!(
+            new_ct.contains("v2:"),
+            "should be re-encrypted with version 2"
+        );
 
         let decrypt_req = Request::post("/v1/vault/decrypt")
             .header("content-type", "application/json")
@@ -719,7 +781,9 @@ mod tests {
         let app = build_router(config_without_vault_key());
         let req = Request::post("/v1/vault/rotate")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"ciphertext":"v1:deadbeef:000000000000000000000000"}"#))
+            .body(Body::from(
+                r#"{"ciphertext":"v1:deadbeef:000000000000000000000000"}"#,
+            ))
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -730,7 +794,9 @@ mod tests {
     #[tokio::test]
     async fn not_found_for_unknown_path() {
         let app = build_router(config_no_auth());
-        let req = Request::get("/v1/vault/unknown").body(Body::empty()).unwrap();
+        let req = Request::get("/v1/vault/unknown")
+            .body(Body::empty())
+            .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -738,7 +804,9 @@ mod tests {
     #[tokio::test]
     async fn version_requires_get() {
         let app = build_router(config_no_auth());
-        let req = Request::post("/v1/vault/version").body(Body::empty()).unwrap();
+        let req = Request::post("/v1/vault/version")
+            .body(Body::empty())
+            .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
@@ -746,7 +814,9 @@ mod tests {
     #[tokio::test]
     async fn encrypt_requires_post() {
         let app = build_router(config_no_auth());
-        let req = Request::get("/v1/vault/encrypt").body(Body::empty()).unwrap();
+        let req = Request::get("/v1/vault/encrypt")
+            .body(Body::empty())
+            .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }

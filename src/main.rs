@@ -19,6 +19,10 @@ struct Args {
     #[arg(long, conflicts_with = "config_path")]
     config_env: Option<String>,
 
+    /// Port to listen on (overrides server_port from config)
+    #[arg(short, long)]
+    port: Option<u16>,
+
     /// Keep the config source (file or env var) after reading (default: delete/unset)
     #[arg(short, long, default_value_t = false)]
     keep_config: bool,
@@ -66,7 +70,7 @@ async fn main() -> ExitCode {
         unset_env_var(env_var);
     }
 
-    match api::run_server(config).await {
+    match api::run_server(config, args.port).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("Server error: {}", e);

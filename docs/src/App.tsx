@@ -3,11 +3,13 @@ import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-do
 import ConfigDoc from "./pages/ConfigDoc";
 import ApiDoc from "./pages/ApiDoc";
 import ConfigMaker from "./pages/ConfigMaker";
+import DevDoc from "./pages/DevDoc";
 
 const navLinks = [
   { to: "/", label: "Config" },
   { to: "/config-maker", label: "Config Maker" },
   { to: "/api", label: "API Routes" },
+  { to: "/dev", label: "Client & Dev" },
 ];
 
 function NavLinks({
@@ -106,6 +108,7 @@ function Layout() {
           <Route path="/" element={<ConfigDoc />} />
           <Route path="/config-maker" element={<ConfigMaker />} />
           <Route path="/api" element={<ApiDoc />} />
+          <Route path="/dev" element={<DevDoc />} />
         </Routes>
       </main>
     </div>
