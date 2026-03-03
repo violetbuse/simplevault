@@ -77,7 +77,7 @@ export default function ConfigDoc() {
       <section className="mb-10">
         <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Usage</h2>
         <p className="text-[var(--text-muted)] mb-4">
-          Config can be read from a file or from an environment variable. By default, the config source (file or env var) is deleted/unset after reading for security. Use <code className="bg-black/30 px-1 rounded">--keep-config</code> to retain it.
+          Pre-built binaries are available on <a href="https://github.com/violetbuse/simplevault/releases" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">GitHub Releases</a>. Config can be read from a file or from an environment variable. By default, the config source (file or env var) is deleted/unset after reading for security. Use <code className="bg-black/30 px-1 rounded">--keep-config</code> to retain it.
         </p>
 
         <h3 className="font-semibold mb-2 text-[var(--accent)]">CLI options</h3>

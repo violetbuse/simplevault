@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { BrowserRouter, Routes, Route, Link, useLocation } from "react-router-dom";
+import Home from "./pages/Home";
 import ConfigDoc from "./pages/ConfigDoc";
 import ApiDoc from "./pages/ApiDoc";
 import ConfigMaker from "./pages/ConfigMaker";
 import DevDoc from "./pages/DevDoc";
 
 const navLinks = [
-  { to: "/", label: "Config" },
+  { to: "/", label: "Home" },
+  { to: "/config", label: "Config" },
   { to: "/config-maker", label: "Config Maker" },
   { to: "/api", label: "API Routes" },
   { to: "/dev", label: "Client & Dev" },
@@ -105,7 +107,8 @@ function Layout() {
 
       <main className="flex-1 p-4 sm:p-6 md:p-12 max-w-3xl w-full min-w-0 md:ml-56">
         <Routes>
-          <Route path="/" element={<ConfigDoc />} />
+          <Route path="/" element={<Home />} />
+          <Route path="/config" element={<ConfigDoc />} />
           <Route path="/config-maker" element={<ConfigMaker />} />
           <Route path="/api" element={<ApiDoc />} />
           <Route path="/dev" element={<DevDoc />} />
