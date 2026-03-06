@@ -2,8 +2,17 @@ import { useState, useCallback } from "react";
 
 type KeyVersions = Record<string, string>;
 
+const OPERATIONS = ["encrypt", "decrypt", "rotate"] as const;
+type Operation = (typeof OPERATIONS)[number];
+
+interface ApiKeyEntry {
+  value: string;
+  keys: "all" | string[];
+  operations: "all" | Operation[];
+}
+
 interface ConfigState {
-  apiKeys: string[];
+  apiKeys: ApiKeyEntry[];
   serverPort: number;
   keyNames: Record<string, KeyVersions>;
 }
@@ -37,15 +46,28 @@ function buildConfig(state: ConfigState): object {
       keys[name] = filtered;
     }
   }
+  const api_keys = state.apiKeys
+    .filter((k) => k.value.trim() !== "")
+    .map((k) => ({
+      value: k.value.trim(),
+      keys: k.keys,
+      operations: k.operations,
+    }));
   return {
-    api_keys: state.apiKeys.filter((k) => k.trim() !== ""),
+    api_keys,
     server_port: state.serverPort,
     keys,
   };
 }
 
+const defaultApiKeyEntry = (): ApiKeyEntry => ({
+  value: "",
+  keys: "all",
+  operations: "all",
+});
+
 export default function ConfigMaker() {
-  const [apiKeys, setApiKeys] = useState<string[]>([""]);
+  const [apiKeys, setApiKeys] = useState<ApiKeyEntry[]>([defaultApiKeyEntry()]);
   const [serverPortInput, setServerPortInput] = useState("8080");
   const [keyNames, setKeyNames] = useState<Record<string, KeyVersions>>({
     vault: { "1": "" },
@@ -75,16 +97,32 @@ export default function ConfigMaker() {
     return { valid: true as const, value: n };
   })();
 
-  const updateApiKey = useCallback((i: number, v: string) => {
+  const updateApiKeyValue = useCallback((i: number, v: string) => {
     setApiKeys((prev) => {
       const next = [...prev];
-      next[i] = v;
+      next[i] = { ...next[i], value: v };
+      return next;
+    });
+  }, []);
+
+  const updateApiKeyKeys = useCallback((i: number, keys: "all" | string[]) => {
+    setApiKeys((prev) => {
+      const next = [...prev];
+      next[i] = { ...next[i], keys };
+      return next;
+    });
+  }, []);
+
+  const updateApiKeyOperations = useCallback((i: number, operations: "all" | Operation[]) => {
+    setApiKeys((prev) => {
+      const next = [...prev];
+      next[i] = { ...next[i], operations };
       return next;
     });
   }, []);
 
   const addApiKey = useCallback(() => {
-    setApiKeys((prev) => [...prev, ""]);
+    setApiKeys((prev) => [...prev, defaultApiKeyEntry()]);
   }, []);
 
   const removeApiKey = useCallback((i: number) => {
@@ -203,7 +241,31 @@ export default function ConfigMaker() {
       if (!Array.isArray(apiKeysArr)) {
         throw new Error("api_keys must be an array");
       }
-      const keys = apiKeysArr.filter((k): k is string => typeof k === "string");
+      const keys: ApiKeyEntry[] = apiKeysArr.map((item): ApiKeyEntry => {
+        if (typeof item === "string") {
+          return { value: item, keys: "all", operations: "all" };
+        }
+        if (typeof item === "object" && item !== null && "value" in item) {
+          const o = item as Record<string, unknown>;
+          const value = typeof o.value === "string" ? o.value : "";
+          const keysVal = o.keys;
+          const keysNorm: "all" | string[] =
+            keysVal === "all" || keysVal === undefined
+              ? "all"
+              : Array.isArray(keysVal) && keysVal.every((x) => typeof x === "string")
+                ? keysVal as string[]
+                : "all";
+          const opsVal = o.operations;
+          const opsNorm: "all" | Operation[] =
+            opsVal === "all" || opsVal === undefined
+              ? "all"
+              : Array.isArray(opsVal) && opsVal.every((x) => typeof x === "string" && OPERATIONS.includes(x as Operation))
+                ? (opsVal as Operation[])
+                : "all";
+          return { value, keys: keysNorm, operations: opsNorm };
+        }
+        return defaultApiKeyEntry();
+      });
 
       const serverPortVal = obj.server_port;
       const port =
@@ -229,7 +291,7 @@ export default function ConfigMaker() {
         }
       }
 
-      setApiKeys(keys.length > 0 ? keys : [""]);
+      setApiKeys(keys.length > 0 ? keys : [defaultApiKeyEntry()]);
       setServerPortInput(String(port));
       setKeyNames(Object.keys(keyNames).length > 0 ? keyNames : { vault: { "1": "" } });
       setImportInput("");
@@ -282,7 +344,7 @@ export default function ConfigMaker() {
               setImportInput(e.target.value);
               setImportError(null);
             }}
-            placeholder={importFormat === "base64" ? "Paste Base64-encoded config..." : 'Paste JSON config (e.g. {"api_keys":[],"server_port":8080,"keys":{}})'}
+            placeholder={importFormat === "base64" ? "Paste Base64-encoded config..." : 'Paste JSON config (e.g. {"api_keys":[{"value":"","keys":"all","operations":"all"}],"server_port":8080,"keys":{}})'}
             rows={4}
             className="flex-1 min-w-0 bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg px-4 py-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] resize-y"
           />
@@ -307,27 +369,121 @@ export default function ConfigMaker() {
           API Keys
         </h2>
         <p className="text-[var(--text-muted)] text-sm mb-4">
-          Leave empty for no authentication. Add keys to require auth on all
-          requests.
+          Leave value empty for no authentication. Each key can be restricted to specific key sets and operations (encrypt, decrypt, rotate).
         </p>
-        <div className="space-y-3">
-          {apiKeys.map((key, i) => (
-            <div key={i} className="flex gap-2 items-center">
-              <input
-                type="text"
-                value={key}
-                onChange={(e) => updateApiKey(i, e.target.value)}
-                placeholder="API key (optional)"
-                className="flex-1 bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg px-4 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              />
-              <button
-                type="button"
-                onClick={() => removeApiKey(i)}
-                className="px-3 py-2 rounded-lg text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                aria-label="Remove"
-              >
-                ×
-              </button>
+        <div className="space-y-6">
+          {apiKeys.map((entry, i) => (
+            <div
+              key={i}
+              className="border border-[var(--border)] rounded-lg p-4 bg-[var(--surface-elevated)] space-y-3"
+            >
+              <div className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  value={entry.value}
+                  onChange={(e) => updateApiKeyValue(i, e.target.value)}
+                  placeholder="API key value (secret)"
+                  className="flex-1 bg-black/30 border border-[var(--border)] rounded-lg px-4 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeApiKey(i)}
+                  className="px-3 py-2 rounded-lg text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors shrink-0"
+                  aria-label="Remove key"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-4 items-start">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs text-[var(--text-muted)] uppercase tracking-wide">Keys</span>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <label className="flex items-center gap-1.5 cursor-pointer text-sm">
+                      <input
+                        type="radio"
+                        name={`keys-${i}`}
+                        checked={entry.keys === "all"}
+                        onChange={() => updateApiKeyKeys(i, "all")}
+                        className="accent-[var(--accent)]"
+                      />
+                      All
+                    </label>
+                    {Object.keys(keyNames).length > 0 && (
+                      <>
+                        <label className="flex items-center gap-1.5 cursor-pointer text-sm">
+                          <input
+                            type="radio"
+                            name={`keys-${i}`}
+                            checked={entry.keys !== "all"}
+                            onChange={() => updateApiKeyKeys(i, [])}
+                            className="accent-[var(--accent)]"
+                          />
+                          Specific:
+                        </label>
+                        {Object.keys(keyNames).map((name) => {
+                          const list = entry.keys === "all" ? [] : entry.keys;
+                          const checked = list.includes(name);
+                          return (
+                            <label key={name} className="flex items-center gap-1.5 cursor-pointer text-sm">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  if (entry.keys === "all") {
+                                    updateApiKeyKeys(i, [name]);
+                                  } else {
+                                    const next = checked ? list.filter((x) => x !== name) : [...list, name];
+                                    updateApiKeyKeys(i, next.length > 0 ? next : "all");
+                                  }
+                                }}
+                                className="accent-[var(--accent)] rounded"
+                              />
+                              <span className="font-mono">{name}</span>
+                            </label>
+                          );
+                        })}
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs text-[var(--text-muted)] uppercase tracking-wide">Operations</span>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <label className="flex items-center gap-1.5 cursor-pointer text-sm">
+                      <input
+                        type="radio"
+                        name={`ops-${i}`}
+                        checked={entry.operations === "all"}
+                        onChange={() => updateApiKeyOperations(i, "all")}
+                        className="accent-[var(--accent)]"
+                      />
+                      All
+                    </label>
+                    {OPERATIONS.map((op) => {
+                      const list = entry.operations === "all" ? [] : entry.operations;
+                      const checked = list.includes(op);
+                      return (
+                        <label key={op} className="flex items-center gap-1.5 cursor-pointer text-sm capitalize">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              if (entry.operations === "all") {
+                                updateApiKeyOperations(i, [op]);
+                              } else {
+                                const next = checked ? list.filter((x) => x !== op) : [...list, op];
+                                updateApiKeyOperations(i, next.length > 0 ? next : "all");
+                              }
+                            }}
+                            className="accent-[var(--accent)] rounded"
+                          />
+                          {op}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
           ))}
           <button

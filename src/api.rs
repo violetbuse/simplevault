@@ -5,16 +5,17 @@ use crate::config::Config;
 use crate::crypto::CipherText;
 use axum::{
     Json, Router,
-    extract::{FromRequest, Path, Request, State, rejection::JsonRejection},
+    extract::{FromRequest, FromRequestParts, Path, Request, State, rejection::JsonRejection},
     http::{Request as HttpRequest, StatusCode, header},
     middleware::{self, Next},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use secrets::SecretVec;
 use serde::de::{Deserializer, Error as SerdeError, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CipherTextObject {
@@ -94,6 +95,31 @@ struct AppState {
     config: Arc<Config>,
 }
 
+/// Stored in request extensions by auth middleware when API key auth succeeds.
+#[derive(Clone)]
+struct AuthenticatedKey(String);
+
+/// Extractor that reads the authenticated API key from request extensions (set by auth middleware).
+struct AuthenticatedKeyExt(Option<String>);
+
+impl<S> FromRequestParts<S> for AuthenticatedKeyExt
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<serde_json::Value>);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let key = parts
+            .extensions
+            .get::<AuthenticatedKey>()
+            .map(|a| a.0.clone());
+        Ok(AuthenticatedKeyExt(key))
+    }
+}
+
 fn extract_api_key_from_request<B>(req: &HttpRequest<B>) -> Option<String> {
     if let Some(auth) = req.headers().get(header::AUTHORIZATION) {
         if let Ok(s) = auth.to_str() {
@@ -119,7 +145,7 @@ fn extract_api_key_from_request<B>(req: &HttpRequest<B>) -> Option<String> {
 
 async fn auth_middleware(
     State(state): State<AppState>,
-    request: HttpRequest<axum::body::Body>,
+    mut request: HttpRequest<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
     if !state.config.api_keys_required() {
@@ -127,13 +153,53 @@ async fn auth_middleware(
     }
     let key = extract_api_key_from_request(&request);
     match key {
-        Some(k) if state.config.validate_api_key(&k) => next.run(request).await,
+        Some(k) if state.config.validate_api_key(&k) => {
+            request.extensions_mut().insert(AuthenticatedKey(k));
+            next.run(request).await
+        }
         _ => (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "missing or invalid API key" })),
         )
             .into_response(),
     }
+}
+
+/// If API key auth is required, checks that the authenticated key is allowed for this key name and operation.
+/// Returns Some(response) to return 403, or None to continue.
+fn check_scope<F>(
+    state: &AppState,
+    key_str: Option<&str>,
+    key_name: &str,
+    operation_allowed: F,
+) -> Option<Response>
+where
+    F: FnOnce(&crate::config::OperationsScope) -> bool,
+{
+    if !state.config.api_keys_required() {
+        return None;
+    }
+    let key_str = key_str?;
+    let api_key = state.config.get_matching_api_key(key_str)?;
+    if !api_key.keys_scope().allows(key_name) {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "API key not allowed for this key" })),
+            )
+                .into_response(),
+        );
+    }
+    if !operation_allowed(api_key.operations_scope()) {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "API key not allowed for this operation" })),
+            )
+                .into_response(),
+        );
+    }
+    None
 }
 
 struct ApiError(anyhow::Error);
@@ -203,33 +269,54 @@ struct KeyNamePath {
 async fn encrypt_handler(
     Path(KeyNamePath { key_name }): Path<KeyNamePath>,
     State(state): State<AppState>,
+    AuthenticatedKeyExt(mut auth_key): AuthenticatedKeyExt,
     ApiJson(body): ApiJson<PlainTextObject>,
-) -> Result<Json<CipherTextObject>, ApiError> {
-    let (version, key) = state
-        .config
-        .get_latest_key(&key_name)
-        .ok_or_else(|| anyhow::anyhow!("key not found: {}", key_name))?;
-    let ciphertext = CipherText::encrypt(body.plaintext, key, version)?;
-    Ok(Json(CipherTextObject { ciphertext }))
+) -> Response {
+    if let Some(r) = check_scope(&state, auth_key.as_deref(), &key_name, |ops| {
+        ops.allows_encrypt()
+    }) {
+        return r;
+    }
+
+    auth_key.zeroize();
+
+    let (version, key) = match state.config.get_latest_key(&key_name) {
+        Some(t) => t,
+        None => return ApiError(anyhow::anyhow!("key not found: {}", key_name)).into_response(),
+    };
+    match CipherText::encrypt(body.plaintext, key, version) {
+        Ok(ciphertext) => Json(CipherTextObject { ciphertext }).into_response(),
+        Err(e) => ApiError(e.into()).into_response(),
+    }
 }
 
 async fn decrypt_handler(
     Path(KeyNamePath { key_name }): Path<KeyNamePath>,
     State(state): State<AppState>,
+    AuthenticatedKeyExt(mut auth_key): AuthenticatedKeyExt,
     ApiJson(body): ApiJson<CipherTextObject>,
-) -> Result<Json<PlainTextObject>, ApiError> {
-    let key = state
-        .config
-        .get_key(&key_name, body.ciphertext.key_version)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
+) -> Response {
+    if let Some(r) = check_scope(&state, auth_key.as_deref(), &key_name, |ops| {
+        ops.allows_decrypt()
+    }) {
+        return r;
+    }
+    auth_key.zeroize();
+    let key = match state.config.get_key(&key_name, body.ciphertext.key_version) {
+        Some(k) => k,
+        None => {
+            return ApiError(anyhow::anyhow!(
                 "key not found: {} (version {})",
                 key_name,
                 body.ciphertext.key_version
-            )
-        })?;
-    let plaintext = body.ciphertext.decrypt(key)?;
-    Ok(Json(PlainTextObject { plaintext }))
+            ))
+            .into_response();
+        }
+    };
+    match body.ciphertext.decrypt(key) {
+        Ok(plaintext) => Json(PlainTextObject { plaintext }).into_response(),
+        Err(e) => ApiError(e.into()).into_response(),
+    }
 }
 
 #[derive(Serialize)]
@@ -251,25 +338,38 @@ async fn version_handler(
 async fn rotate_handler(
     Path(KeyNamePath { key_name }): Path<KeyNamePath>,
     State(state): State<AppState>,
+    AuthenticatedKeyExt(mut auth_key): AuthenticatedKeyExt,
     ApiJson(body): ApiJson<CipherTextObject>,
-) -> Result<Json<CipherTextObject>, ApiError> {
-    let old_key = state
-        .config
-        .get_key(&key_name, body.ciphertext.key_version)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
+) -> Response {
+    if let Some(r) = check_scope(&state, auth_key.as_deref(), &key_name, |ops| {
+        ops.allows_rotate()
+    }) {
+        return r;
+    }
+    auth_key.zeroize();
+    let old_key = match state.config.get_key(&key_name, body.ciphertext.key_version) {
+        Some(k) => k,
+        None => {
+            return ApiError(anyhow::anyhow!(
                 "key not found: {} (version {})",
                 key_name,
                 body.ciphertext.key_version
-            )
-        })?;
-    let plaintext = body.ciphertext.decrypt(old_key)?;
-    let (new_version, new_key) = state
-        .config
-        .get_latest_key(&key_name)
-        .ok_or_else(|| anyhow::anyhow!("key not found: {}", key_name))?;
-    let ciphertext = CipherText::encrypt(plaintext, new_key, new_version)?;
-    Ok(Json(CipherTextObject { ciphertext }))
+            ))
+            .into_response();
+        }
+    };
+    let plaintext = match body.ciphertext.decrypt(old_key) {
+        Ok(p) => p,
+        Err(e) => return ApiError(e.into()).into_response(),
+    };
+    let (new_version, new_key) = match state.config.get_latest_key(&key_name) {
+        Some(t) => t,
+        None => return ApiError(anyhow::anyhow!("key not found: {}", key_name)).into_response(),
+    };
+    match CipherText::encrypt(plaintext, new_key, new_version) {
+        Ok(ciphertext) => Json(CipherTextObject { ciphertext }).into_response(),
+        Err(e) => ApiError(e.into()).into_response(),
+    }
 }
 
 fn build_router(config: Config) -> Router {
@@ -456,6 +556,44 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
+    /// Config with vault and other keys; one API key allowed only for key name "vault".
+    fn config_with_keys_scope_vault_only() -> Config {
+        let json = r#"{
+            "api_keys": [{ "value": "vault-only-key", "keys": ["vault"], "operations": "all" }],
+            "server_port": 8080,
+            "keys": {
+                "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+                "other": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// Config with one API key allowed only for operations encrypt and decrypt (no rotate).
+    fn config_with_operations_encrypt_decrypt_only() -> Config {
+        let json = r#"{
+            "api_keys": [{ "value": "encrypt-decrypt-key", "keys": "all", "operations": ["encrypt", "decrypt"] }],
+            "server_port": 8080,
+            "keys": {
+                "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// Config with one API key allowed only for key "other" and only encrypt.
+    fn config_with_keys_other_operations_encrypt_only() -> Config {
+        let json = r#"{
+            "api_keys": [{ "value": "other-encrypt-key", "keys": ["other"], "operations": ["encrypt"] }],
+            "server_port": 8080,
+            "keys": {
+                "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+                "other": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
     async fn read_body(response: axum::response::Response) -> Vec<u8> {
         response
             .into_body()
@@ -550,6 +688,135 @@ mod tests {
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // --- Scope and operation enforcement tests ---
+
+    #[tokio::test]
+    async fn scope_keys_allows_only_listed_key_name() {
+        let app = build_router(config_with_keys_scope_vault_only());
+
+        let req_vault = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "vault-only-key")
+            .body(Body::from(r#"{"plaintext":"hello"}"#))
+            .unwrap();
+        let resp_vault = app.clone().oneshot(req_vault).await.unwrap();
+        assert_eq!(
+            resp_vault.status(),
+            StatusCode::OK,
+            "encrypt to vault should be allowed"
+        );
+
+        let req_other = Request::post("/v1/other/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "vault-only-key")
+            .body(Body::from(r#"{"plaintext":"hello"}"#))
+            .unwrap();
+        let resp_other = app.oneshot(req_other).await.unwrap();
+        assert_eq!(resp_other.status(), StatusCode::FORBIDDEN);
+        let body = read_body(resp_other).await;
+        let body_str = String::from_utf8(body).unwrap();
+        assert!(body_str.contains("not allowed for this key"));
+    }
+
+    #[tokio::test]
+    async fn scope_operations_forbids_rotate_when_not_in_list() {
+        let app = build_router(config_with_operations_encrypt_decrypt_only());
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(r#"{"plaintext":"x"}"#))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let decrypt_req = Request::post("/v1/vault/decrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(json!({ "ciphertext": ciphertext }).to_string()))
+            .unwrap();
+        let decrypt_resp = app.clone().oneshot(decrypt_req).await.unwrap();
+        assert_eq!(decrypt_resp.status(), StatusCode::OK);
+
+        let rotate_req = Request::post("/v1/vault/rotate")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(json!({ "ciphertext": ciphertext }).to_string()))
+            .unwrap();
+        let rotate_resp = app.oneshot(rotate_req).await.unwrap();
+        assert_eq!(rotate_resp.status(), StatusCode::FORBIDDEN);
+        let rotate_body = read_body(rotate_resp).await;
+        let rotate_str = String::from_utf8(rotate_body).unwrap();
+        assert!(rotate_str.contains("not allowed for this operation"));
+    }
+
+    #[tokio::test]
+    async fn scope_operations_forbids_decrypt_when_only_encrypt_allowed() {
+        let app = build_router(config_with_keys_other_operations_encrypt_only());
+
+        let encrypt_req = Request::post("/v1/other/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "other-encrypt-key")
+            .body(Body::from(r#"{"plaintext":"x"}"#))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let decrypt_req = Request::post("/v1/other/decrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "other-encrypt-key")
+            .body(Body::from(json!({ "ciphertext": ciphertext }).to_string()))
+            .unwrap();
+        let decrypt_resp = app.oneshot(decrypt_req).await.unwrap();
+        assert_eq!(decrypt_resp.status(), StatusCode::FORBIDDEN);
+        let dec_body = read_body(decrypt_resp).await;
+        assert!(
+            String::from_utf8(dec_body)
+                .unwrap()
+                .contains("not allowed for this operation")
+        );
+    }
+
+    #[tokio::test]
+    async fn scope_keys_forbids_vault_when_only_other_allowed() {
+        let app = build_router(config_with_keys_other_operations_encrypt_only());
+
+        let req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "other-encrypt-key")
+            .body(Body::from(r#"{"plaintext":"hello"}"#))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = read_body(response).await;
+        assert!(
+            String::from_utf8(body)
+                .unwrap()
+                .contains("not allowed for this key")
+        );
+    }
+
+    #[tokio::test]
+    async fn scope_keys_and_operations_both_checked() {
+        let app = build_router(config_with_keys_other_operations_encrypt_only());
+
+        let req_other_encrypt = Request::post("/v1/other/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "other-encrypt-key")
+            .body(Body::from(r#"{"plaintext":"ok"}"#))
+            .unwrap();
+        let resp = app.oneshot(req_other_encrypt).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     // --- Encrypt handler tests ---
