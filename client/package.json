@@ -13,7 +13,7 @@
     }
   },
   "bin": {
-    "simplevault": "./dist/cli.js"
+    "simplevault": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -36,7 +36,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/violetbuse/simplevault"
+    "url": "git+https://github.com/violetbuse/simplevault.git"
   },
   "homepage": "https://simplevault.viowet.com",
   "engines": {

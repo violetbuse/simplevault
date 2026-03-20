@@ -8,7 +8,7 @@ use std::{
 use base64::Engine;
 
 use rand::Rng;
-use secrets::{SecretBox, SecretVec};
+use secrets::SecretVec;
 use serde::{
     Deserialize,
     de::{Deserializer, Error as SerdeError},
@@ -17,7 +17,7 @@ use tokio::{
     fs::{File, remove_file},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
-use zeroize::{Zeroize, Zeroizing, ZeroizeOnDrop};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::EncryptionKey;
 
@@ -115,13 +115,14 @@ impl<'de> Deserialize<'de> for KeysScope {
     }
 }
 
-/// Allowed operation: encrypt, decrypt, or rotate.
+/// Allowed operation: encrypt, decrypt, rotate, or verify.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyOperation {
     Encrypt,
     Decrypt,
     Rotate,
+    Verify,
 }
 
 /// Scope for which operations this API key can perform: "all" or a list of operations.
@@ -153,6 +154,13 @@ impl OperationsScope {
             OperationsScope::List(ops) => ops.iter().any(|o| matches!(o, ApiKeyOperation::Rotate)),
         }
     }
+
+    pub fn allows_verify(&self) -> bool {
+        match self {
+            OperationsScope::All => true,
+            OperationsScope::List(ops) => ops.iter().any(|o| matches!(o, ApiKeyOperation::Verify)),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -169,7 +177,7 @@ impl OperationsScopeInput {
                 if s == "all" {
                     Ok(OperationsScope::All)
                 } else {
-                    Err("operations must be the string \"all\" or an array of \"encrypt\", \"decrypt\", \"rotate\"".to_string())
+                    Err("operations must be the string \"all\" or an array of \"encrypt\", \"decrypt\", \"rotate\", \"verify\"".to_string())
                 }
             }
             OperationsScopeInput::List(l) => Ok(OperationsScope::List(l)),
@@ -368,6 +376,7 @@ mod tests {
         assert!(key.operations_scope().allows_encrypt());
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
+        assert!(key.operations_scope().allows_verify());
     }
 
     #[test]
@@ -382,6 +391,7 @@ mod tests {
         assert!(key.operations_scope().allows_encrypt());
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
+        assert!(key.operations_scope().allows_verify());
     }
 
     #[test]
@@ -396,6 +406,7 @@ mod tests {
         assert!(key.operations_scope().allows_encrypt());
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
+        assert!(key.operations_scope().allows_verify());
     }
 
     #[test]
@@ -416,6 +427,7 @@ mod tests {
         assert!(ops.allows_encrypt());
         assert!(ops.allows_decrypt());
         assert!(!ops.allows_rotate());
+        assert!(!ops.allows_verify());
     }
 
     #[test]
@@ -430,11 +442,13 @@ mod tests {
         let string_key = &config.api_keys()[0];
         assert!(matches!(string_key.keys_scope(), KeysScope::All));
         assert!(string_key.operations_scope().allows_rotate());
+        assert!(string_key.operations_scope().allows_verify());
 
         let object_key = &config.api_keys()[1];
         assert!(object_key.operations_scope().allows_encrypt());
         assert!(!object_key.operations_scope().allows_decrypt());
         assert!(!object_key.operations_scope().allows_rotate());
+        assert!(!object_key.operations_scope().allows_verify());
     }
 
     #[test]
@@ -474,19 +488,21 @@ mod tests {
         assert!(scope.allows_encrypt());
         assert!(scope.allows_decrypt());
         assert!(scope.allows_rotate());
+        assert!(scope.allows_verify());
     }
 
     #[test]
     fn operations_scope_deserialize_list() {
         let scope: OperationsScope =
-            serde_json::from_str(r#"["encrypt", "decrypt", "rotate"]"#).unwrap();
+            serde_json::from_str(r#"["encrypt", "decrypt", "rotate", "verify"]"#).unwrap();
         match &scope {
-            OperationsScope::List(ops) => assert_eq!(ops.len(), 3),
+            OperationsScope::List(ops) => assert_eq!(ops.len(), 4),
             OperationsScope::All => panic!("expected List"),
         }
         assert!(scope.allows_encrypt());
         assert!(scope.allows_decrypt());
         assert!(scope.allows_rotate());
+        assert!(scope.allows_verify());
     }
 
     #[test]
@@ -495,6 +511,7 @@ mod tests {
         assert!(scope.allows_encrypt());
         assert!(!scope.allows_decrypt());
         assert!(!scope.allows_rotate());
+        assert!(!scope.allows_verify());
     }
 
     #[test]

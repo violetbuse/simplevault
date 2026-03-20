@@ -75,6 +75,32 @@ export default function ApiDoc() {
 
           <div className="border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--surface-elevated)]">
             <div className="px-5 py-3 border-b border-[var(--border)] flex items-center gap-3">
+              <span className="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-green-500/20 text-green-400">POST</span>
+              <code className="font-mono text-sm">/v1/{`{key_name}`}/verify-signature</code>
+            </div>
+            <div className="p-5">
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                Verify an HMAC signature using a secret stored as encrypted ciphertext. The server decrypts <code className="bg-black/30 px-1 rounded">ciphertext</code> internally and verifies the signature against the decoded payload bytes.
+              </p>
+              <p className="text-sm font-medium mb-2">Request body:</p>
+              <pre className="bg-black/30 rounded p-4 text-sm font-mono mb-4">{`{
+  "ciphertext": "v1:...",
+  "payload": "7b226964223a226576745f74657374227d",
+  "signature": "2f6d2a0c9f8f1e0f...",
+  "algorithm": "hmac-sha256"
+}`}</pre>
+              <p className="text-sm font-medium mb-2">Response:</p>
+              <pre className="bg-black/30 rounded p-4 text-sm font-mono mb-4">{`{ "verified": true }`}</pre>
+              <ul className="text-[var(--text-muted)] text-sm space-y-1">
+                <li><code className="bg-black/30 px-1 rounded">payload</code> must be hex-encoded bytes.</li>
+                <li><code className="bg-black/30 px-1 rounded">signature</code> must be hex-encoded bytes.</li>
+                <li>Supported algorithms: <code className="bg-black/30 px-1 rounded">hmac-sha1</code>, <code className="bg-black/30 px-1 rounded">hmac-sha256</code>, <code className="bg-black/30 px-1 rounded">hmac-sha512</code> (also <code className="bg-black/30 px-1 rounded">sha1</code>, <code className="bg-black/30 px-1 rounded">sha256</code>, <code className="bg-black/30 px-1 rounded">sha512</code> aliases).</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--surface-elevated)]">
+            <div className="px-5 py-3 border-b border-[var(--border)] flex items-center gap-3">
               <span className="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-blue-500/20 text-blue-400">GET</span>
               <code className="font-mono text-sm">/v1/{`{key_name}`}/version</code>
             </div>
@@ -96,11 +122,26 @@ export default function ApiDoc() {
         </p>
         <ul className="text-[var(--text-muted)] space-y-2">
           <li><code className="bg-black/30 px-1 rounded">401</code> — Missing or invalid API key</li>
+          <li><code className="bg-black/30 px-1 rounded">403</code> — API key does not have scope for the key name or operation</li>
           <li><code className="bg-black/30 px-1 rounded">404</code> — Unknown route</li>
           <li><code className="bg-black/30 px-1 rounded">405</code> — Wrong HTTP method</li>
-          <li><code className="bg-black/30 px-1 rounded">422</code> — Invalid request body (e.g. missing plaintext, malformed ciphertext)</li>
+          <li><code className="bg-black/30 px-1 rounded">422</code> — Invalid request body (e.g. missing plaintext, malformed ciphertext, non-hex payload)</li>
           <li><code className="bg-black/30 px-1 rounded">500</code> — Server error (e.g. key not found, decryption failed)</li>
         </ul>
+      </section>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Stripe Webhook Example</h2>
+        <p className="text-[var(--text-muted)] mb-3">
+          One pattern is to store the Stripe webhook secret encrypted in SimpleVault, then verify signatures with <code className="bg-black/30 px-1 rounded">/verify-signature</code>.
+        </p>
+        <ol className="text-[var(--text-muted)] text-sm space-y-2 list-decimal list-inside">
+          <li>Encrypt and store your webhook secret once using <code className="bg-black/30 px-1 rounded">/encrypt</code>.</li>
+          <li>At webhook time, build the Stripe signed payload string (for example <code className="bg-black/30 px-1 rounded">"{`{timestamp}`}.{`{rawBody}`}"</code> for <code className="bg-black/30 px-1 rounded">v1</code>).</li>
+          <li>Hex-encode that payload string and the received <code className="bg-black/30 px-1 rounded">v1</code> signature.</li>
+          <li>Call <code className="bg-black/30 px-1 rounded">/verify-signature</code> with <code className="bg-black/30 px-1 rounded">algorithm: "hmac-sha256"</code>.</li>
+          <li>Accept only when <code className="bg-black/30 px-1 rounded">verified</code> is <code className="bg-black/30 px-1 rounded">true</code>.</li>
+        </ol>
       </section>
 
       <section className="mb-10">

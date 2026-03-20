@@ -10,6 +10,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import { createHmac } from 'node:crypto';
 
 const BASE_URL = (process.env.SIMPLEVAULT_BASE_URL || 'http://localhost:8080').replace(/\/$/, '');
 
@@ -116,6 +117,81 @@ describe('SimpleVault API contract', () => {
 
     it('returns 422 for invalid ciphertext format', async () => {
       const { status, data } = await request('POST', '/v1/vault/rotate', { ciphertext: 'invalid' });
+      assert.strictEqual(status, 422, `Expected 422, got ${status}`);
+      assert.ok(data?.error, `Expected error field, got ${JSON.stringify(data)}`);
+    });
+  });
+
+  describe('POST /v1/:keyName/verify-signature', () => {
+    it('verifies hmac-sha256 signature with encrypted secret', async () => {
+      const secret = 'whsec_test_secret';
+      const encSecret = await request('POST', '/v1/vault/encrypt', { plaintext: secret });
+      assert.strictEqual(encSecret.status, 200, 'encrypt secret should succeed');
+      assert.ok(typeof encSecret.data?.ciphertext === 'string', 'encrypt should return ciphertext');
+
+      const payload = '{"id":"evt_test"}';
+      const payloadHex = Buffer.from(payload, 'utf8').toString('hex');
+      const signatureHex = createHmac('sha256', secret).update(payload, 'utf8').digest('hex');
+
+      const { status, data } = await request('POST', '/v1/vault/verify-signature', {
+        ciphertext: encSecret.data.ciphertext,
+        payload: payloadHex,
+        signature: signatureHex,
+        algorithm: 'hmac-sha256',
+      });
+
+      assert.strictEqual(status, 200, `Expected 200, got ${status}`);
+      assert.strictEqual(data?.verified, true, `Expected verified=true, got ${JSON.stringify(data)}`);
+    });
+
+    it('returns verified=false for signature mismatch', async () => {
+      const secret = 'whsec_test_secret';
+      const encSecret = await request('POST', '/v1/vault/encrypt', { plaintext: secret });
+      assert.strictEqual(encSecret.status, 200, 'encrypt secret should succeed');
+
+      const payloadHex = Buffer.from('payload', 'utf8').toString('hex');
+      const wrongSignatureHex = createHmac('sha256', 'wrong_secret').update('payload', 'utf8').digest('hex');
+
+      const { status, data } = await request('POST', '/v1/vault/verify-signature', {
+        ciphertext: encSecret.data.ciphertext,
+        payload: payloadHex,
+        signature: wrongSignatureHex,
+        algorithm: 'sha256',
+      });
+
+      assert.strictEqual(status, 200, `Expected 200, got ${status}`);
+      assert.strictEqual(data?.verified, false, `Expected verified=false, got ${JSON.stringify(data)}`);
+    });
+
+    it('returns 422 for non-hex payload', async () => {
+      const secret = 'whsec_test_secret';
+      const encSecret = await request('POST', '/v1/vault/encrypt', { plaintext: secret });
+      assert.strictEqual(encSecret.status, 200, 'encrypt secret should succeed');
+
+      const { status, data } = await request('POST', '/v1/vault/verify-signature', {
+        ciphertext: encSecret.data.ciphertext,
+        payload: 'not-hex',
+        signature: 'abcd',
+        algorithm: 'hmac-sha256',
+      });
+
+      assert.strictEqual(status, 422, `Expected 422, got ${status}`);
+      assert.ok(data?.error, `Expected error field, got ${JSON.stringify(data)}`);
+    });
+
+    it('returns 422 for non-hex signature', async () => {
+      const secret = 'whsec_test_secret';
+      const encSecret = await request('POST', '/v1/vault/encrypt', { plaintext: secret });
+      assert.strictEqual(encSecret.status, 200, 'encrypt secret should succeed');
+
+      const payloadHex = Buffer.from('payload', 'utf8').toString('hex');
+      const { status, data } = await request('POST', '/v1/vault/verify-signature', {
+        ciphertext: encSecret.data.ciphertext,
+        payload: payloadHex,
+        signature: 'base64_like+/',
+        algorithm: 'hmac-sha256',
+      });
+
       assert.strictEqual(status, 422, `Expected 422, got ${status}`);
       assert.ok(data?.error, `Expected error field, got ${JSON.stringify(data)}`);
     });

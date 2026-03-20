@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 
 type KeyVersions = Record<string, string>;
 
-const OPERATIONS = ["encrypt", "decrypt", "rotate"] as const;
+const OPERATIONS = ["encrypt", "decrypt", "rotate", "verify"] as const;
 type Operation = (typeof OPERATIONS)[number];
 
 interface ApiKeyEntry {
@@ -74,6 +74,8 @@ export default function ConfigMaker() {
   });
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyStartVersionInput, setNewKeyStartVersionInput] = useState("1");
+  const [renamingKey, setRenamingKey] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [outputFormat, setOutputFormat] = useState<"json" | "base64">("json");
   const [importInput, setImportInput] = useState("");
   const [importFormat, setImportFormat] = useState<"json" | "base64">("json");
@@ -143,6 +145,39 @@ export default function ConfigMaker() {
       delete next[name];
       return next;
     });
+  }, []);
+
+  const startRenameKeySet = useCallback((name: string) => {
+    setRenamingKey(name);
+    setRenameValue(name);
+  }, []);
+
+  const confirmRenameKeySet = useCallback(() => {
+    if (renamingKey === null) return;
+    const newName = renameValue.trim();
+    if (!newName || newName === renamingKey) {
+      setRenamingKey(null);
+      return;
+    }
+    setKeyNames((prev) => {
+      if (newName in prev) return prev;
+      const next: Record<string, KeyVersions> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        next[k === renamingKey ? newName : k] = v;
+      }
+      return next;
+    });
+    setApiKeys((prev) =>
+      prev.map((entry) => {
+        if (entry.keys === "all" || !entry.keys.includes(renamingKey)) return entry;
+        return { ...entry, keys: entry.keys.map((k) => (k === renamingKey ? newName : k)) };
+      })
+    );
+    setRenamingKey(null);
+  }, [renamingKey, renameValue]);
+
+  const cancelRenameKeySet = useCallback(() => {
+    setRenamingKey(null);
   }, []);
 
   const updateEncKey = useCallback(
@@ -369,7 +404,7 @@ export default function ConfigMaker() {
           API Keys
         </h2>
         <p className="text-[var(--text-muted)] text-sm mb-4">
-          Leave value empty for no authentication. Each key can be restricted to specific key sets and operations (encrypt, decrypt, rotate).
+          Leave value empty for no authentication. Each key can be restricted to specific key sets and operations (encrypt, decrypt, rotate, verify).
         </p>
         <div className="space-y-6">
           {apiKeys.map((entry, i) => (
@@ -575,16 +610,65 @@ export default function ConfigMaker() {
               className="border border-[var(--border)] rounded-lg p-5 bg-[var(--surface-elevated)]"
             >
               <div className="flex items-center justify-between mb-4">
-                <h3 className="font-mono font-semibold text-[var(--accent)]">
-                  {name}
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => removeKeySet(name)}
-                  className="text-sm text-[var(--text-muted)] hover:text-red-400"
-                >
-                  Remove
-                </button>
+                {renamingKey === name ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") confirmRenameKeySet();
+                        if (e.key === "Escape") cancelRenameKeySet();
+                      }}
+                      autoFocus
+                      className={`w-48 bg-black/30 border rounded px-3 py-1 font-mono text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-[var(--accent)] ${
+                        renameValue.trim() && renameValue.trim() !== name && renameValue.trim() in keyNames
+                          ? "border-red-500 focus:ring-red-500"
+                          : "border-[var(--border)]"
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={confirmRenameKeySet}
+                      disabled={!renameValue.trim() || (renameValue.trim() !== name && renameValue.trim() in keyNames)}
+                      className="px-2 py-1 rounded text-sm text-green-400 hover:text-green-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelRenameKeySet}
+                      className="px-2 py-1 rounded text-sm text-[var(--text-muted)] hover:text-[var(--text)]"
+                    >
+                      Cancel
+                    </button>
+                    {renameValue.trim() && renameValue.trim() !== name && renameValue.trim() in keyNames && (
+                      <span className="text-sm text-red-400">Name already exists</span>
+                    )}
+                  </div>
+                ) : (
+                  <h3 className="font-mono font-semibold text-[var(--accent)]">
+                    {name}
+                  </h3>
+                )}
+                <div className="flex items-center gap-2">
+                  {renamingKey !== name && (
+                    <button
+                      type="button"
+                      onClick={() => startRenameKeySet(name)}
+                      className="text-sm text-[var(--text-muted)] hover:text-[var(--accent)]"
+                    >
+                      Rename
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeKeySet(name)}
+                    className="text-sm text-[var(--text-muted)] hover:text-red-400"
+                  >
+                    Remove
+                  </button>
+                </div>
               </div>
               <div className="space-y-3">
                 {Object.entries(versions).map(([ver, hex]) => {

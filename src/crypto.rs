@@ -4,9 +4,12 @@ use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, AeadCore, KeyInit},
 };
+use hmac::{Hmac, Mac};
 use secrets::{SecretBox, SecretVec};
 use serde::de::{Deserializer, Error as SerdeError, Visitor};
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
+use sha2::{Sha256, Sha512};
 
 // AES-GCM-256 encryption key
 pub struct EncryptionKey {
@@ -121,6 +124,112 @@ impl CipherText {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignatureAlgorithm {
+    HmacSha1,
+    HmacSha256,
+    HmacSha512,
+}
+
+impl SignatureAlgorithm {
+    fn parse(input: &str) -> Result<Self, anyhow::Error> {
+        let normalized = input
+            .trim()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .replace(' ', "");
+        match normalized.as_str() {
+            "hmac-sha1" | "sha1" => Ok(SignatureAlgorithm::HmacSha1),
+            "hmac-sha256" | "sha256" => Ok(SignatureAlgorithm::HmacSha256),
+            "hmac-sha512" | "sha512" => Ok(SignatureAlgorithm::HmacSha512),
+            _ => Err(anyhow::anyhow!("unsupported signature algorithm: {}", input)),
+        }
+    }
+}
+
+fn decode_hex_input(name: &str, value: &str) -> Result<Vec<u8>, anyhow::Error> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("{} cannot be empty", name));
+    }
+    if trimmed.len() % 2 != 0 {
+        return Err(anyhow::anyhow!("{} must be hex with even length", name));
+    }
+    if !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(anyhow::anyhow!("{} must be hex-encoded", name));
+    }
+    hex::decode(trimmed).map_err(|e| anyhow::anyhow!("invalid {} hex: {}", name, e))
+}
+
+fn verify_hmac_sha1(secret: &[u8], payload: &[u8], provided_signature: &[u8]) -> Result<bool, anyhow::Error> {
+    let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(secret)
+        .map_err(|e| anyhow::anyhow!("invalid HMAC key: {}", e))?;
+    mac.update(payload);
+    Ok(mac.verify_slice(provided_signature).is_ok())
+}
+
+fn verify_hmac_sha256(
+    secret: &[u8],
+    payload: &[u8],
+    provided_signature: &[u8],
+) -> Result<bool, anyhow::Error> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret)
+        .map_err(|e| anyhow::anyhow!("invalid HMAC key: {}", e))?;
+    mac.update(payload);
+    Ok(mac.verify_slice(provided_signature).is_ok())
+}
+
+fn verify_hmac_sha512(
+    secret: &[u8],
+    payload: &[u8],
+    provided_signature: &[u8],
+) -> Result<bool, anyhow::Error> {
+    let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(secret)
+        .map_err(|e| anyhow::anyhow!("invalid HMAC key: {}", e))?;
+    mac.update(payload);
+    Ok(mac.verify_slice(provided_signature).is_ok())
+}
+
+pub fn verify_signature_with_encrypted_secret(
+    encrypted_secret: &CipherText,
+    key: &EncryptionKey,
+    payload: &[u8],
+    signature: &str,
+    algorithm: &str,
+) -> Result<bool, anyhow::Error> {
+    let signature_bytes = decode_hex_input("signature", signature)?;
+    verify_signature_with_encrypted_secret_bytes(
+        encrypted_secret,
+        key,
+        payload,
+        &signature_bytes,
+        algorithm,
+    )
+}
+
+pub fn verify_signature_with_encrypted_secret_bytes(
+    encrypted_secret: &CipherText,
+    key: &EncryptionKey,
+    payload: &[u8],
+    signature: &[u8],
+    algorithm: &str,
+) -> Result<bool, anyhow::Error> {
+    let secret = encrypted_secret.decrypt(key)?;
+    let parsed_algorithm = SignatureAlgorithm::parse(algorithm)?;
+
+    match parsed_algorithm {
+        SignatureAlgorithm::HmacSha1 => {
+            verify_hmac_sha1(secret.borrow().as_ref(), payload, signature)
+        }
+        SignatureAlgorithm::HmacSha256 => {
+            verify_hmac_sha256(secret.borrow().as_ref(), payload, signature)
+        }
+        SignatureAlgorithm::HmacSha512 => {
+            verify_hmac_sha512(secret.borrow().as_ref(), payload, signature)
+        }
+    }
+}
+
 impl Debug for CipherText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CipherText")
@@ -212,7 +321,9 @@ impl<'de> Deserialize<'de> for CipherText {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hmac::{Hmac, Mac};
     use secrets::SecretVec;
+    use sha2::Sha256;
 
     fn make_key_hex() -> &'static str {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -510,5 +621,88 @@ mod tests {
         let ct_tampered: CipherText = serde_json::from_str(&tampered).unwrap();
         let result = ct_tampered.decrypt(&key);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_signature_with_encrypted_secret_accepts_hmac_sha256_hex() {
+        let key = make_encryption_key();
+        let secret = make_plaintext("whsec_test_secret");
+        let encrypted_secret = CipherText::encrypt(secret, &key, 1).unwrap();
+        let payload = b"{\"id\":\"evt_test\"}";
+
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(b"whsec_test_secret").unwrap();
+        mac.update(payload);
+        let expected = mac.finalize().into_bytes();
+        let signature = hex::encode(expected);
+
+        let verified = verify_signature_with_encrypted_secret(
+            &encrypted_secret,
+            &key,
+            payload,
+            &signature,
+            "hmac-sha256",
+        )
+        .unwrap();
+
+        assert!(verified);
+    }
+
+    #[test]
+    fn verify_signature_with_encrypted_secret_rejects_mismatch() {
+        let key = make_encryption_key();
+        let secret = make_plaintext("whsec_test_secret");
+        let encrypted_secret = CipherText::encrypt(secret, &key, 1).unwrap();
+        let payload = b"payload";
+
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(b"wrong_secret").unwrap();
+        mac.update(payload);
+        let expected = mac.finalize().into_bytes();
+        let signature = hex::encode(expected);
+
+        let verified = verify_signature_with_encrypted_secret(
+            &encrypted_secret,
+            &key,
+            payload,
+            &signature,
+            "sha256",
+        )
+        .unwrap();
+
+        assert!(!verified);
+    }
+
+    #[test]
+    fn verify_signature_with_encrypted_secret_rejects_unknown_algorithm() {
+        let key = make_encryption_key();
+        let secret = make_plaintext("whsec_test_secret");
+        let encrypted_secret = CipherText::encrypt(secret, &key, 1).unwrap();
+
+        let result = verify_signature_with_encrypted_secret(
+            &encrypted_secret,
+            &key,
+            b"payload",
+            "abcd",
+            "rsa-sha256",
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_signature_with_encrypted_secret_rejects_non_hex_signature() {
+        let key = make_encryption_key();
+        let secret = make_plaintext("whsec_test_secret");
+        let encrypted_secret = CipherText::encrypt(secret, &key, 1).unwrap();
+
+        let result = verify_signature_with_encrypted_secret(
+            &encrypted_secret,
+            &key,
+            b"payload",
+            "base64-like+/",
+            "hmac-sha256",
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("hex"));
     }
 }

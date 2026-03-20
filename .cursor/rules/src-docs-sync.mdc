@@ -1,0 +1,18 @@
+---
+description: Keep docs and config maker aligned with src changes
+alwaysApply: true
+---
+
+# Source to Docs Sync
+
+When changes are made to the main code in `src/`, update the docs site in `docs/` so documentation reflects actual behavior.
+
+## Required updates
+
+1. Document relevant source changes in `docs/`.
+2. If config format changes (new option, renamed key, changed behavior, default changes), update `docs/src/pages/ConfigMaker.tsx`.
+
+## Completion checklist
+
+- [ ] Docs content updated in `docs/` when behavior/spec changed
+- [ ] `docs/src/pages/ConfigMaker.tsx` updated when config format changed

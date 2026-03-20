@@ -35,13 +35,13 @@ export default function ConfigDoc() {
             </p>
             <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1 mb-3">
               <li>If empty <code className="bg-black/30 px-1 rounded">[]</code>, no authentication is required</li>
-              <li>If non-empty, requests to <code className="bg-black/30 px-1 rounded">/encrypt</code>, <code className="bg-black/30 px-1 rounded">/decrypt</code>, and <code className="bg-black/30 px-1 rounded">/rotate</code> must include a valid key and the key must be allowed for that key name and operation</li>
+              <li>If non-empty, requests to <code className="bg-black/30 px-1 rounded">/encrypt</code>, <code className="bg-black/30 px-1 rounded">/decrypt</code>, <code className="bg-black/30 px-1 rounded">/rotate</code>, and <code className="bg-black/30 px-1 rounded">/verify-signature</code> must include a valid key and the key must be allowed for that key name and operation</li>
             </ul>
             <p className="text-sm text-[var(--text-muted)] mb-2 font-medium">Object form (per entry):</p>
             <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1">
               <li><code className="bg-black/30 px-1 rounded">value</code> (required) — The secret key string used to authenticate (e.g. Bearer token, <code className="bg-black/30 px-1 rounded">x-api-key</code> header)</li>
               <li><code className="bg-black/30 px-1 rounded">keys</code> (optional, default <code className="bg-black/30 px-1 rounded">"all"</code>) — Either the string <code className="bg-black/30 px-1 rounded">"all"</code> or an array of key set names (e.g. <code className="bg-black/30 px-1 rounded">["vault", "other"]</code>) this API key can access</li>
-              <li><code className="bg-black/30 px-1 rounded">operations</code> (optional, default <code className="bg-black/30 px-1 rounded">"all"</code>) — Either the string <code className="bg-black/30 px-1 rounded">"all"</code> or an array of allowed operations: <code className="bg-black/30 px-1 rounded">["encrypt", "decrypt", "rotate"]</code></li>
+              <li><code className="bg-black/30 px-1 rounded">operations</code> (optional, default <code className="bg-black/30 px-1 rounded">"all"</code>) — Either the string <code className="bg-black/30 px-1 rounded">"all"</code> or an array of allowed operations: <code className="bg-black/30 px-1 rounded">["encrypt", "decrypt", "rotate", "verify"]</code></li>
             </ul>
             <p className="text-sm text-[var(--text-muted)] mt-2">
               <strong>Backwards compatible:</strong> a plain string (e.g. <code className="bg-black/30 px-1 rounded">"my-key"</code>) is treated as <code className="bg-black/30 px-1 rounded">keys: "all"</code> and <code className="bg-black/30 px-1 rounded">operations: "all"</code>.

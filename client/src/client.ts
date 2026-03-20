@@ -1,5 +1,5 @@
 /**
- * SimpleVault API client for encrypt, decrypt, rotate, and version.
+ * SimpleVault API client for encrypt, decrypt, rotate, verify-signature, and version.
  */
 
 export interface SimpleVaultClientOptions {
@@ -7,6 +7,13 @@ export interface SimpleVaultClientOptions {
   baseUrl: string;
   /** Optional API key for authentication (Bearer / x-api-key) */
   apiKey?: string;
+}
+
+export interface VerifySignatureParams {
+  ciphertext: string;
+  payload: string;
+  signature: string;
+  algorithm: 'hmac-sha1' | 'sha1' | 'hmac-sha256' | 'sha256' | 'hmac-sha512' | 'sha512';
 }
 
 export class SimpleVaultClient {
@@ -78,6 +85,22 @@ export class SimpleVaultClient {
   async rotate(keyName: string, ciphertext: string): Promise<{ ciphertext: string }> {
     return this.request('POST', `/v1/${encodeURIComponent(keyName)}/rotate`, {
       ciphertext,
+    });
+  }
+
+  /**
+   * Verify signature against a hex-encoded payload.
+   * The ciphertext is decrypted server-side and used as the HMAC secret.
+   */
+  async verifySignature(
+    keyName: string,
+    params: VerifySignatureParams
+  ): Promise<{ verified: boolean }> {
+    return this.request('POST', `/v1/${encodeURIComponent(keyName)}/verify-signature`, {
+      ciphertext: params.ciphertext,
+      payload: params.payload,
+      signature: params.signature,
+      algorithm: params.algorithm,
     });
   }
 

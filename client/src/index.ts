@@ -18,7 +18,7 @@
  */
 
 export { SimpleVaultClient } from './client.js';
-export type { SimpleVaultClientOptions } from './client.js';
+export type { SimpleVaultClientOptions, VerifySignatureParams } from './client.js';
 export {
   runDevServer,
   runDevServerWithWatch,

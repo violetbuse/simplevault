@@ -9,18 +9,33 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createServer } from 'node:net';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PORT = 8080;
-const BASE_URL = `http://localhost:${PORT}`;
 const ROOT = join(__dirname, '..', '..');
 const RUST_BIN = join(ROOT, 'target', 'release', 'simplevault');
 const CONFIG_PATH = join(__dirname, 'config.json');
 
-async function waitForServer(maxAttempts = 20, intervalMs = 250) {
+async function findFreePort() {
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('failed to allocate free port')));
+        return;
+      }
+      const { port } = address;
+      server.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
+}
+
+async function waitForServer(baseUrl, maxAttempts = 80, intervalMs = 250) {
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const res = await fetch(`${BASE_URL}/v1/vault/version`);
+      const res = await fetch(`${baseUrl}/v1/vault/version`);
       if (res.ok) return true;
     } catch {
       // not ready yet
@@ -57,14 +72,14 @@ function killAndWait(server, maxWaitMs = 5000) {
   });
 }
 
-function runTests() {
+function runTests(baseUrl) {
   return new Promise((resolve) => {
     const child = spawn(
       process.execPath,
       ['--test', join(__dirname, 'contract.mjs')],
       {
         cwd: join(__dirname, '..'),
-        env: { ...process.env, SIMPLEVAULT_BASE_URL: BASE_URL },
+        env: { ...process.env, SIMPLEVAULT_BASE_URL: baseUrl },
         stdio: 'inherit',
       }
     );
@@ -73,7 +88,9 @@ function runTests() {
 }
 
 async function main() {
-  const server = spawn(RUST_BIN, [CONFIG_PATH, '--keep-config'], {
+  const port = await findFreePort();
+  const baseUrl = `http://localhost:${port}`;
+  const server = spawn(RUST_BIN, [CONFIG_PATH, '--keep-config', '--port', String(port)], {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
@@ -81,13 +98,13 @@ async function main() {
 
   let exitCode = 1;
   try {
-    const ready = await waitForServer();
+    const ready = await waitForServer(baseUrl);
     if (!ready) {
       console.error('Rust server did not become ready in time. Run: cargo build --release');
       process.exit(1);
     }
 
-    exitCode = await runTests();
+    exitCode = await runTests(baseUrl);
   } finally {
     await killAndWait(server, 5000);
   }

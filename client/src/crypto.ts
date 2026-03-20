@@ -5,7 +5,7 @@
  * - nonce is 12 bytes (96 bits)
  */
 
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32;
@@ -95,4 +95,46 @@ export function decrypt(ciphertext: string, key: EncryptionKey): Buffer {
  */
 export function isValidKeyHex(hex: string): boolean {
   return hex.length === 64 && /^[0-9a-fA-F]+$/.test(hex);
+}
+
+export type VerifyAlgorithm =
+  | 'hmac-sha1'
+  | 'sha1'
+  | 'hmac-sha256'
+  | 'sha256'
+  | 'hmac-sha512'
+  | 'sha512';
+
+function normalizeVerifyAlgorithm(algorithm: string): 'sha1' | 'sha256' | 'sha512' {
+  const normalized = algorithm.trim().toLowerCase().replace(/_/g, '-').replace(/\s+/g, '');
+  if (normalized === 'hmac-sha1' || normalized === 'sha1') return 'sha1';
+  if (normalized === 'hmac-sha256' || normalized === 'sha256') return 'sha256';
+  if (normalized === 'hmac-sha512' || normalized === 'sha512') return 'sha512';
+  throw new Error(`unsupported signature algorithm: ${algorithm}`);
+}
+
+export function decodeHexInput(name: string, value: string): Buffer {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`${name} cannot be empty`);
+  }
+  if (trimmed.length % 2 !== 0) {
+    throw new Error(`${name} must be hex with even length`);
+  }
+  if (!/^[0-9a-fA-F]+$/.test(trimmed)) {
+    throw new Error(`${name} must be hex-encoded`);
+  }
+  return Buffer.from(trimmed, 'hex');
+}
+
+export function verifyHmacSignature(
+  secret: Buffer,
+  payload: Buffer,
+  signature: Buffer,
+  algorithm: VerifyAlgorithm | string
+): boolean {
+  const digestAlgo = normalizeVerifyAlgorithm(algorithm);
+  const expected = createHmac(digestAlgo, secret).update(payload).digest();
+  if (expected.length !== signature.length) return false;
+  return timingSafeEqual(expected, signature);
 }
