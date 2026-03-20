@@ -28,9 +28,12 @@ async function findFreePort() {
 }
 
 async function waitForServer(baseUrl, maxAttempts = 80, intervalMs = 250) {
+  const apiKey = process.env.SIMPLEVAULT_API_KEY || 'contract-test-key';
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const res = await fetch(`${baseUrl}/v1/vault/version`);
+      const res = await fetch(`${baseUrl}/v1/vault/version`, {
+        headers: { 'x-api-key': apiKey },
+      });
       if (res.ok) return true;
     } catch {
       // not ready yet

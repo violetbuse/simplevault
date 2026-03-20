@@ -1,10 +1,45 @@
 {
-  "api_keys": [],
+  "api_keys": [
+    {
+      "value": "contract-test-key",
+      "keys": "all",
+      "operations": "all"
+    },
+    {
+      "value": "limited-contract-key",
+      "keys": [
+        "limited"
+      ],
+      "operations": [
+        "encrypt",
+        "decrypt"
+      ]
+    }
+  ],
   "server_port": 8080,
   "keys": {
     "vault": {
       "1": "0000000000000000000000000000000000000000000000000000000000000000",
       "2": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "limited": {
+      "1": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "blocked": {
+      "1": "3333333333333333333333333333333333333333333333333333333333333333"
     }
+  },
+  "outbound_destinations": {
+    "vault": [
+      {
+        "host": "127.0.0.1",
+        "path_prefix": "/echo",
+        "methods": [
+          "GET",
+          "POST"
+        ]
+      }
+    ],
+    "blocked": []
   }
 }

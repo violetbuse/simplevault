@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 
 type KeyVersions = Record<string, string>;
 
-const OPERATIONS = ["encrypt", "decrypt", "rotate", "verify"] as const;
+const OPERATIONS = ["encrypt", "decrypt", "rotate", "verify", "proxy"] as const;
 type Operation = (typeof OPERATIONS)[number];
 
 interface ApiKeyEntry {
@@ -15,6 +15,13 @@ interface ConfigState {
   apiKeys: ApiKeyEntry[];
   serverPort: number;
   keyNames: Record<string, KeyVersions>;
+  outboundDestinations: Record<string, Array<{ host: string; path_prefix?: string; methods?: string[] }>>;
+}
+
+interface OutboundDestinationRule {
+  host: string;
+  path_prefix: string;
+  methods: string[];
 }
 
 function generateHexKey(): string {
@@ -57,6 +64,7 @@ function buildConfig(state: ConfigState): object {
     api_keys,
     server_port: state.serverPort,
     keys,
+    outbound_destinations: state.outboundDestinations,
   };
 }
 
@@ -80,6 +88,7 @@ export default function ConfigMaker() {
   const [importInput, setImportInput] = useState("");
   const [importFormat, setImportFormat] = useState<"json" | "base64">("json");
   const [importError, setImportError] = useState<string | null>(null);
+  const [outboundDestinations, setOutboundDestinations] = useState<Record<string, OutboundDestinationRule[]>>({});
 
   const serverPortValidation = (() => {
     const trimmed = serverPortInput.trim();
@@ -145,6 +154,11 @@ export default function ConfigMaker() {
       delete next[name];
       return next;
     });
+    setOutboundDestinations((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
   }, []);
 
   const startRenameKeySet = useCallback((name: string) => {
@@ -162,6 +176,14 @@ export default function ConfigMaker() {
     setKeyNames((prev) => {
       if (newName in prev) return prev;
       const next: Record<string, KeyVersions> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        next[k === renamingKey ? newName : k] = v;
+      }
+      return next;
+    });
+    setOutboundDestinations((prev) => {
+      if (!(renamingKey in prev)) return prev;
+      const next: Record<string, OutboundDestinationRule[]> = {};
       for (const [k, v] of Object.entries(prev)) {
         next[k === renamingKey ? newName : k] = v;
       }
@@ -221,6 +243,56 @@ export default function ConfigMaker() {
     }));
   }, []);
 
+  const addDestinationRule = useCallback((keySet: string) => {
+    setOutboundDestinations((prev) => ({
+      ...prev,
+      [keySet]: [...(prev[keySet] ?? []), { host: "", path_prefix: "", methods: [] }],
+    }));
+  }, []);
+
+  const removeDestinationRule = useCallback((keySet: string, index: number) => {
+    setOutboundDestinations((prev) => {
+      const rules = (prev[keySet] ?? []).filter((_, i) => i !== index);
+      if (rules.length === 0) {
+        const next = { ...prev };
+        delete next[keySet];
+        return next;
+      }
+      return { ...prev, [keySet]: rules };
+    });
+  }, []);
+
+  const updateDestinationRule = useCallback(
+    (keySet: string, index: number, field: "host" | "path_prefix" | "methods", value: string | string[]) => {
+      setOutboundDestinations((prev) => {
+        const rules = [...(prev[keySet] ?? [])];
+        const existing = rules[index] ?? { host: "", path_prefix: "", methods: [] };
+        rules[index] = {
+          ...existing,
+          [field]: value,
+        };
+        return { ...prev, [keySet]: rules };
+      });
+    },
+    []
+  );
+
+  const enableDestinationPolicy = useCallback((keySet: string) => {
+    setOutboundDestinations((prev) => {
+      if (keySet in prev) return prev;
+      return { ...prev, [keySet]: [] };
+    });
+  }, []);
+
+  const disableDestinationPolicy = useCallback((keySet: string) => {
+    setOutboundDestinations((prev) => {
+      if (!(keySet in prev)) return prev;
+      const next = { ...prev };
+      delete next[keySet];
+      return next;
+    });
+  }, []);
+
   const serverPort = serverPortValidation.valid ? serverPortValidation.value : 0;
   const hasValidKeys = (() => {
     for (const versions of Object.values(keyNames)) {
@@ -232,7 +304,30 @@ export default function ConfigMaker() {
     return false;
   })();
   const configValid = serverPortValidation.valid && hasValidKeys;
-  const config = configValid ? buildConfig({ apiKeys, serverPort, keyNames }) : null;
+  const normalizedOutboundDestinations = (() => {
+    const result: Record<string, Array<{ host: string; path_prefix?: string; methods?: string[] }>> = {};
+    for (const keySet of Object.keys(outboundDestinations)) {
+      const rules = outboundDestinations[keySet] ?? [];
+      const normalizedRules = rules
+        .map((rule) => {
+          const host = rule.host.trim();
+          if (!host) return null;
+          const pathPrefix = rule.path_prefix.trim();
+          const methods = rule.methods.map((m) => m.trim().toUpperCase()).filter((m) => m.length > 0);
+          return {
+            host,
+            ...(pathPrefix ? { path_prefix: pathPrefix } : {}),
+            ...(methods.length > 0 ? { methods } : {}),
+          };
+        })
+        .filter((rule): rule is { host: string; path_prefix?: string; methods?: string[] } => rule !== null);
+      result[keySet] = normalizedRules;
+    }
+    return result;
+  })();
+  const config = configValid
+    ? buildConfig({ apiKeys, serverPort, keyNames, outboundDestinations: normalizedOutboundDestinations })
+    : null;
   const jsonStr = config !== null ? JSON.stringify(config, null, 2) : "";
   const base64Str =
     config !== null && typeof btoa !== "undefined"
@@ -329,6 +424,28 @@ export default function ConfigMaker() {
       setApiKeys(keys.length > 0 ? keys : [defaultApiKeyEntry()]);
       setServerPortInput(String(port));
       setKeyNames(Object.keys(keyNames).length > 0 ? keyNames : { vault: { "1": "" } });
+      const outboundDestinations = obj.outbound_destinations;
+      if (typeof outboundDestinations === "object" && outboundDestinations !== null && !Array.isArray(outboundDestinations)) {
+        const parsedDestinations: Record<string, OutboundDestinationRule[]> = {};
+        for (const [keySet, ruleList] of Object.entries(outboundDestinations as Record<string, unknown>)) {
+          if (!Array.isArray(ruleList)) continue;
+          parsedDestinations[keySet] = ruleList
+            .map((rule) => {
+              if (typeof rule !== "object" || rule === null) return null;
+              const value = rule as Record<string, unknown>;
+              const host = typeof value.host === "string" ? value.host : "";
+              const path_prefix = typeof value.path_prefix === "string" ? value.path_prefix : "";
+              const methods = Array.isArray(value.methods)
+                ? value.methods.filter((method): method is string => typeof method === "string")
+                : [];
+              return { host, path_prefix, methods };
+            })
+            .filter((rule): rule is OutboundDestinationRule => rule !== null);
+        }
+        setOutboundDestinations(parsedDestinations);
+      } else {
+        setOutboundDestinations({});
+      }
       setImportInput("");
       setImportError(null);
     } catch (err) {
@@ -404,7 +521,7 @@ export default function ConfigMaker() {
           API Keys
         </h2>
         <p className="text-[var(--text-muted)] text-sm mb-4">
-          Leave value empty for no authentication. Each key can be restricted to specific key sets and operations (encrypt, decrypt, rotate, verify).
+          Leave value empty for no authentication. Each key can be restricted to specific key sets and operations (encrypt, decrypt, rotate, verify, proxy).
         </p>
         <div className="space-y-6">
           {apiKeys.map((entry, i) => (
@@ -548,6 +665,127 @@ export default function ConfigMaker() {
         {!serverPortValidation.valid && (
           <p className="mt-2 text-sm text-red-400">{serverPortValidation.error}</p>
         )}
+      </section>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">
+          Outbound Destination Policy
+        </h2>
+        <p className="text-[var(--text-muted)] text-sm mb-4">
+          Configure per-key-set allow rules for <code className="bg-black/30 px-1 rounded">proxy-substitute</code>. Each rule
+          requires a host and can optionally restrict path prefix and methods.
+        </p>
+        <div className="space-y-4">
+          {Object.keys(keyNames).length === 0 && (
+            <p className="text-sm text-[var(--text-muted)]">Add at least one key set first.</p>
+          )}
+          {Object.keys(keyNames).map((keySet) => {
+            const policyConfigured = keySet in outboundDestinations;
+            const rules = outboundDestinations[keySet] ?? [];
+            return (
+              <div
+                key={keySet}
+                className="border border-[var(--border)] rounded-lg p-4 bg-[var(--surface-elevated)] space-y-3"
+              >
+                <div className="flex items-center justify-between">
+                  <h3 className="font-mono font-semibold text-[var(--accent)]">{keySet}</h3>
+                  {policyConfigured ? (
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => addDestinationRule(keySet)}
+                        className="text-sm text-[var(--accent)] hover:text-[var(--accent-muted)]"
+                      >
+                        + Add rule
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => disableDestinationPolicy(keySet)}
+                        className="text-sm text-[var(--text-muted)] hover:text-red-400"
+                      >
+                        Disable policy
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => enableDestinationPolicy(keySet)}
+                      className="text-sm text-[var(--accent)] hover:text-[var(--accent-muted)]"
+                    >
+                      Configure policy
+                    </button>
+                  )}
+                </div>
+                {!policyConfigured ? (
+                  <p className="text-sm text-[var(--text-muted)]">
+                    No policy configured. Destinations are allowed by default for this key set.
+                  </p>
+                ) : rules.length === 0 ? (
+                  <p className="text-sm text-[var(--text-muted)]">
+                    No rules configured. This key set will not be allowed to proxy to any destination.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {rules.map((rule, idx) => {
+                      const methodList = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+                      return (
+                        <div key={`${keySet}-${idx}`} className="border border-[var(--border)] rounded-lg p-3 space-y-3">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <input
+                              type="text"
+                              value={rule.host}
+                              onChange={(e) => updateDestinationRule(keySet, idx, "host", e.target.value)}
+                              placeholder="Host (e.g. api.stripe.com)"
+                              className="bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                            />
+                            <input
+                              type="text"
+                              value={rule.path_prefix}
+                              onChange={(e) => updateDestinationRule(keySet, idx, "path_prefix", e.target.value)}
+                              placeholder="Path prefix (optional, e.g. /v1/)"
+                              className="bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                            />
+                          </div>
+                          <div className="flex flex-wrap gap-3 items-center">
+                            <span className="text-xs text-[var(--text-muted)] uppercase tracking-wide">Methods</span>
+                            {methodList.map((method) => {
+                              const checked = rule.methods.includes(method);
+                              return (
+                                <label key={method} className="flex items-center gap-1.5 cursor-pointer text-sm">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => {
+                                      const next = checked
+                                        ? rule.methods.filter((m) => m !== method)
+                                        : [...rule.methods, method];
+                                      updateDestinationRule(keySet, idx, "methods", next);
+                                    }}
+                                    className="accent-[var(--accent)] rounded"
+                                  />
+                                  {method}
+                                </label>
+                              );
+                            })}
+                          </div>
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => removeDestinationRule(keySet, idx)}
+                              className="text-sm text-[var(--text-muted)] hover:text-red-400"
+                            >
+                              Remove rule
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </section>
 
       <section className="mb-10">

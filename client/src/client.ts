@@ -16,6 +16,23 @@ export interface VerifySignatureParams {
   algorithm: 'hmac-sha1' | 'sha1' | 'hmac-sha256' | 'sha256' | 'hmac-sha512' | 'sha512';
 }
 
+export interface ProxySubstituteRequest {
+  ciphertext: string;
+  request: {
+    method: string;
+    url: string;
+    headers?: Record<string, string>;
+    body?: string;
+  };
+  placeholder?: string;
+}
+
+export interface ProxySubstituteResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
 export class SimpleVaultClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -109,5 +126,16 @@ export class SimpleVaultClient {
    */
   async getVersion(keyName: string): Promise<{ version: number }> {
     return this.request('GET', `/v1/${encodeURIComponent(keyName)}/version`);
+  }
+
+  /**
+   * Decrypt ciphertext and substitute plaintext into an outbound request.
+   * The outbound response is returned as JSON payload with status/headers/body.
+   */
+  async proxySubstitute(
+    keyName: string,
+    params: ProxySubstituteRequest
+  ): Promise<ProxySubstituteResponse> {
+    return this.request('POST', `/v1/${encodeURIComponent(keyName)}/proxy-substitute`, params);
   }
 }

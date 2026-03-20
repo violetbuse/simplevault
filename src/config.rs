@@ -26,6 +26,8 @@ pub struct Config {
     api_keys: Vec<ApiKey>,
     pub server_port: u16,
     keys: KeySet,
+    #[serde(default)]
+    outbound_destinations: HashMap<String, Vec<OutboundDestinationRule>>,
 }
 
 impl Config {
@@ -52,6 +54,14 @@ impl Config {
             .iter()
             .max_by_key(|(v, _)| *v)
             .map(|(v, k)| (*v, k))
+    }
+
+    pub fn destination_allowed(&self, key_name: &str, method: &str, host: &str, path: &str) -> bool {
+        let rules = match self.outbound_destinations.get(key_name) {
+            Some(value) => value,
+            None => return true,
+        };
+        rules.iter().any(|rule| rule.matches(method, host, path))
     }
 
     #[cfg(test)]
@@ -123,6 +133,7 @@ pub enum ApiKeyOperation {
     Decrypt,
     Rotate,
     Verify,
+    Proxy,
 }
 
 /// Scope for which operations this API key can perform: "all" or a list of operations.
@@ -161,6 +172,13 @@ impl OperationsScope {
             OperationsScope::List(ops) => ops.iter().any(|o| matches!(o, ApiKeyOperation::Verify)),
         }
     }
+
+    pub fn allows_proxy(&self) -> bool {
+        match self {
+            OperationsScope::All => true,
+            OperationsScope::List(ops) => ops.iter().any(|o| matches!(o, ApiKeyOperation::Proxy)),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -177,11 +195,46 @@ impl OperationsScopeInput {
                 if s == "all" {
                     Ok(OperationsScope::All)
                 } else {
-                    Err("operations must be the string \"all\" or an array of \"encrypt\", \"decrypt\", \"rotate\", \"verify\"".to_string())
+                    Err("operations must be the string \"all\" or an array of \"encrypt\", \"decrypt\", \"rotate\", \"verify\", \"proxy\"".to_string())
                 }
             }
             OperationsScopeInput::List(l) => Ok(OperationsScope::List(l)),
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct OutboundDestinationRule {
+    pub host: String,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    #[serde(default)]
+    pub methods: Option<Vec<String>>,
+}
+
+impl OutboundDestinationRule {
+    fn matches(&self, method: &str, host: &str, path: &str) -> bool {
+        let normalized_rule_host = self.host.to_ascii_lowercase();
+        let normalized_host = host.to_ascii_lowercase();
+        if normalized_rule_host != normalized_host {
+            return false;
+        }
+
+        if let Some(path_prefix) = &self.path_prefix {
+            if !path.starts_with(path_prefix) {
+                return false;
+            }
+        }
+
+        if let Some(methods) = &self.methods {
+            if methods
+                .iter()
+                .all(|candidate| !candidate.eq_ignore_ascii_case(method))
+            {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -335,7 +388,7 @@ pub fn read_config_from_env(env_var_name: &str, delete_after: bool) -> Result<Co
             .map_err(|e| anyhow::anyhow!("Env var '{}' is not valid UTF-8: {}", env_var_name, e))?,
     );
 
-    let config: Config = serde_json::from_str(&*json_str)
+    let config: Config = serde_json::from_str(&json_str)
         .map_err(|e| anyhow::anyhow!("Invalid config JSON in env var '{}': {}", env_var_name, e))?;
 
     if delete_after {
@@ -366,7 +419,7 @@ mod tests {
     #[test]
     fn api_key_deserialize_from_string_backwards_compat() {
         let config = minimal_config(r#"["legacy-string-key"]"#);
-        assert_eq!(config.api_keys_required(), true);
+        assert!(config.api_keys_required());
         assert!(config.validate_api_key("legacy-string-key"));
         assert!(!config.validate_api_key("wrong"));
 
@@ -377,6 +430,7 @@ mod tests {
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
         assert!(key.operations_scope().allows_verify());
+        assert!(key.operations_scope().allows_proxy());
     }
 
     #[test]
@@ -392,6 +446,7 @@ mod tests {
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
         assert!(key.operations_scope().allows_verify());
+        assert!(key.operations_scope().allows_proxy());
     }
 
     #[test]
@@ -407,6 +462,7 @@ mod tests {
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
         assert!(key.operations_scope().allows_verify());
+        assert!(key.operations_scope().allows_proxy());
     }
 
     #[test]
@@ -428,6 +484,7 @@ mod tests {
         assert!(ops.allows_decrypt());
         assert!(!ops.allows_rotate());
         assert!(!ops.allows_verify());
+        assert!(!ops.allows_proxy());
     }
 
     #[test]
@@ -443,12 +500,14 @@ mod tests {
         assert!(matches!(string_key.keys_scope(), KeysScope::All));
         assert!(string_key.operations_scope().allows_rotate());
         assert!(string_key.operations_scope().allows_verify());
+        assert!(string_key.operations_scope().allows_proxy());
 
         let object_key = &config.api_keys()[1];
         assert!(object_key.operations_scope().allows_encrypt());
         assert!(!object_key.operations_scope().allows_decrypt());
         assert!(!object_key.operations_scope().allows_rotate());
         assert!(!object_key.operations_scope().allows_verify());
+        assert!(!object_key.operations_scope().allows_proxy());
     }
 
     #[test]
@@ -489,20 +548,22 @@ mod tests {
         assert!(scope.allows_decrypt());
         assert!(scope.allows_rotate());
         assert!(scope.allows_verify());
+        assert!(scope.allows_proxy());
     }
 
     #[test]
     fn operations_scope_deserialize_list() {
         let scope: OperationsScope =
-            serde_json::from_str(r#"["encrypt", "decrypt", "rotate", "verify"]"#).unwrap();
+            serde_json::from_str(r#"["encrypt", "decrypt", "rotate", "verify", "proxy"]"#).unwrap();
         match &scope {
-            OperationsScope::List(ops) => assert_eq!(ops.len(), 4),
+            OperationsScope::List(ops) => assert_eq!(ops.len(), 5),
             OperationsScope::All => panic!("expected List"),
         }
         assert!(scope.allows_encrypt());
         assert!(scope.allows_decrypt());
         assert!(scope.allows_rotate());
         assert!(scope.allows_verify());
+        assert!(scope.allows_proxy());
     }
 
     #[test]
@@ -512,6 +573,7 @@ mod tests {
         assert!(!scope.allows_decrypt());
         assert!(!scope.allows_rotate());
         assert!(!scope.allows_verify());
+        assert!(!scope.allows_proxy());
     }
 
     #[test]
@@ -526,5 +588,34 @@ mod tests {
         let json = r#"{"api_keys": [{"keys": "all", "operations": "all"}], "server_port": 8080, "keys": {}}"#;
         let result = serde_json::from_str::<Config>(json);
         assert!(result.is_err(), "object without value field must be rejected");
+    }
+
+    #[test]
+    fn destination_policy_allows_matching_host_and_method() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [
+                    { "host": "api.stripe.com", "methods": ["POST"], "path_prefix": "/v1/" }
+                ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed("vault", "POST", "api.stripe.com", "/v1/charges"));
+        assert!(!config.destination_allowed("vault", "GET", "api.stripe.com", "/v1/charges"));
+        assert!(!config.destination_allowed("vault", "POST", "api.stripe.com", "/v2/charges"));
+    }
+
+    #[test]
+    fn destination_policy_defaults_to_allow_when_missing() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed("vault", "GET", "example.com", "/"));
     }
 }

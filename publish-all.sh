@@ -27,6 +27,11 @@ error() {
   exit 1
 }
 
+command -v npm >/dev/null 2>&1 || error "npm not found in PATH"
+if ! npm whoami >/dev/null 2>&1; then
+  error "You are not logged in to npm. Run 'npm login' and try again."
+fi
+
 echo "=========================================="
 echo "0. Version check"
 echo "=========================================="
@@ -57,7 +62,6 @@ echo "=========================================="
 echo
 
 command -v docker >/dev/null 2>&1 || error "docker not found in PATH"
-command -v npm >/dev/null 2>&1 || error "npm not found in PATH"
 command -v gh >/dev/null 2>&1 || error "gh (GitHub CLI) not found in PATH"
 command -v wrangler >/dev/null 2>&1 || error "wrangler not found in PATH"
 

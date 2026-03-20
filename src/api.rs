@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::crypto::{CipherText, verify_signature_with_encrypted_secret_bytes};
+use crate::proxy_substitute;
 use axum::{
     Json, Router,
     extract::{FromRequest, FromRequestParts, Path, Request, State, rejection::JsonRejection},
@@ -93,6 +94,7 @@ impl<'de> Deserialize<'de> for PlainTextObject {
 #[derive(Clone)]
 struct AppState {
     config: Arc<Config>,
+    http_client: reqwest::Client,
 }
 
 /// Stored in request extensions by auth middleware when API key auth succeeds.
@@ -442,15 +444,115 @@ async fn verify_signature_handler(
     }
 }
 
+async fn proxy_substitute_handler(
+    Path(KeyNamePath { key_name }): Path<KeyNamePath>,
+    State(state): State<AppState>,
+    AuthenticatedKeyExt(mut auth_key): AuthenticatedKeyExt,
+    ApiJson(body): ApiJson<proxy_substitute::ProxySubstituteRequest>,
+) -> Response {
+    if let Some(r) = check_scope(&state, auth_key.as_deref(), &key_name, |ops| {
+        ops.allows_proxy()
+    }) {
+        return r;
+    }
+    auth_key.zeroize();
+
+    let key = match state.config.get_key(&key_name, body.ciphertext.key_version) {
+        Some(k) => k,
+        None => {
+            return ApiError(anyhow::anyhow!(
+                "key not found: {} (version {})",
+                key_name,
+                body.ciphertext.key_version
+            ))
+            .into_response();
+        }
+    };
+    let plaintext = match body.ciphertext.decrypt(key) {
+        Ok(p) => p,
+        Err(e) => return ApiError(e.into()).into_response(),
+    };
+    let plaintext_str = match std::str::from_utf8(plaintext.borrow().as_ref()) {
+        Ok(value) => value.to_string(),
+        Err(e) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": format!("decrypted plaintext is not valid UTF-8: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    let prepared = match proxy_substitute::prepare_outbound_request(
+        body.request,
+        &plaintext_str,
+        body.placeholder.as_deref(),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err((status, error)) = proxy_substitute::validate_destination_safety(&prepared.url) {
+        return (status, Json(serde_json::json!({ "error": error }))).into_response();
+    }
+
+    let host = match prepared.url.host_str() {
+        Some(value) => value,
+        None => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": "outbound url must include a host" })),
+            )
+                .into_response();
+        }
+    };
+    if !state.config.destination_allowed(
+        &key_name,
+        prepared.method.as_str(),
+        host,
+        prepared.url.path(),
+    ) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "destination is not allowed for this key set" })),
+        )
+            .into_response();
+    }
+
+    match proxy_substitute::execute_outbound_request(&state.http_client, prepared).await {
+        Ok(proxy_response) => (
+            StatusCode::from_u16(proxy_response.status).unwrap_or(StatusCode::BAD_GATEWAY),
+            Json(proxy_response),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": format!("upstream request failed: {}", error) })),
+        )
+            .into_response(),
+    }
+}
+
 fn build_router(config: Config) -> Router {
     let state = AppState {
         config: Arc::new(config),
+        http_client: reqwest::Client::new(),
     };
     Router::new()
         .route("/v1/{key_name}/encrypt", post(encrypt_handler))
         .route("/v1/{key_name}/decrypt", post(decrypt_handler))
         .route("/v1/{key_name}/rotate", post(rotate_handler))
         .route("/v1/{key_name}/verify-signature", post(verify_signature_handler))
+        .route(
+            "/v1/{key_name}/proxy-substitute",
+            post(proxy_substitute_handler),
+        )
         .route("/v1/{key_name}/version", get(version_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -910,6 +1012,35 @@ mod tests {
             .header("x-api-key", "encrypt-decrypt-key")
             .body(Body::from(
                 r#"{"ciphertext":"v1:deadbeef:000000000000000000000000","payload":"78","signature":"aa","algorithm":"hmac-sha256"}"#,
+            ))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn scope_operations_forbids_proxy_when_not_in_list() {
+        let app = build_router(config_with_operations_encrypt_decrypt_only());
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(r#"{"plaintext":"x"}"#))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let req = Request::post("/v1/vault/proxy-substitute")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "request": { "method": "GET", "url": "https://api.stripe.com/v1/charges" }
+                })
+                .to_string(),
             ))
             .unwrap();
         let response = app.oneshot(req).await.unwrap();

@@ -9,7 +9,7 @@ import type { Request, Response, NextFunction } from 'express';
 import express from 'express';
 import * as crypto from './crypto.js';
 import { loadConfig } from './config.js';
-import type { DevConfig } from './config.js';
+import type { ApiKeyConfigEntry, ApiKeyOperation, DevConfig } from './config.js';
 
 function getLatestKey(
   config: DevConfig,
@@ -60,12 +60,98 @@ function createAuthMiddleware(config: DevConfig) {
       return;
     }
     const key = extractApiKey(req);
-    if (key === null || !config.api_keys.includes(key)) {
+    const matched = getMatchingApiKey(config, key);
+    if (key === null || matched === null) {
       res.status(401).json({ error: 'missing or invalid API key' });
       return;
     }
+    res.locals.authenticatedApiKey = matched;
     next();
   };
+}
+
+function getMatchingApiKey(config: DevConfig, key: string | null): ApiKeyConfigEntry | null {
+  if (key === null) {
+    return null;
+  }
+  for (const apiKey of config.api_keys) {
+    if (typeof apiKey === 'string') {
+      if (apiKey === key) {
+        return apiKey;
+      }
+      continue;
+    }
+    if (apiKey.value === key) {
+      return apiKey;
+    }
+  }
+  return null;
+}
+
+function apiKeyAllowsKeyName(apiKey: ApiKeyConfigEntry, keyName: string): boolean {
+  if (typeof apiKey === 'string') {
+    return true;
+  }
+  if (apiKey.keys === undefined || apiKey.keys === 'all') {
+    return true;
+  }
+  return apiKey.keys.includes(keyName);
+}
+
+function apiKeyAllowsOperation(apiKey: ApiKeyConfigEntry, operation: ApiKeyOperation): boolean {
+  if (typeof apiKey === 'string') {
+    return true;
+  }
+  if (apiKey.operations === undefined || apiKey.operations === 'all') {
+    return true;
+  }
+  return apiKey.operations.includes(operation);
+}
+
+function checkScope(config: DevConfig, req: Request, keyName: string, operation: ApiKeyOperation): string | null {
+  if (config.api_keys.length === 0) {
+    return null;
+  }
+  const apiKey = resLocalApiKey(req);
+  if (apiKey === null) {
+    return 'missing or invalid API key';
+  }
+  if (!apiKeyAllowsKeyName(apiKey, keyName)) {
+    return 'API key not allowed for this key';
+  }
+  if (!apiKeyAllowsOperation(apiKey, operation)) {
+    return 'API key not allowed for this operation';
+  }
+  return null;
+}
+
+function resLocalApiKey(req: Request): ApiKeyConfigEntry | null {
+  return (req.res?.locals?.authenticatedApiKey ?? null) as ApiKeyConfigEntry | null;
+}
+
+function destinationAllowed(
+  config: DevConfig,
+  keyName: string,
+  method: string,
+  host: string,
+  path: string
+): boolean {
+  const rules = config.outbound_destinations?.[keyName];
+  if (!rules) {
+    return true;
+  }
+  return rules.some((rule) => {
+    if (rule.host.toLowerCase() !== host.toLowerCase()) {
+      return false;
+    }
+    if (rule.path_prefix && !path.startsWith(rule.path_prefix)) {
+      return false;
+    }
+    if (rule.methods && !rule.methods.some((ruleMethod) => ruleMethod.toUpperCase() === method.toUpperCase())) {
+      return false;
+    }
+    return true;
+  });
 }
 
 export function createDevServer(config: DevConfig): express.Application {
@@ -86,6 +172,11 @@ export function createDevServer(config: DevConfig): express.Application {
 
   app.post('/v1/:keyName/encrypt', (req, res) => {
     const { keyName } = req.params;
+    const scopeError = checkScope(config, req, keyName, 'encrypt');
+    if (scopeError) {
+      res.status(403).json({ error: scopeError });
+      return;
+    }
     const plaintext = req.body?.plaintext;
     if (typeof plaintext !== 'string') {
       res.status(422).json({ error: 'missing or invalid plaintext field' });
@@ -102,6 +193,11 @@ export function createDevServer(config: DevConfig): express.Application {
 
   app.post('/v1/:keyName/decrypt', (req, res) => {
     const { keyName } = req.params;
+    const scopeError = checkScope(config, req, keyName, 'decrypt');
+    if (scopeError) {
+      res.status(403).json({ error: scopeError });
+      return;
+    }
     const ciphertext = req.body?.ciphertext;
     if (typeof ciphertext !== 'string') {
       res.status(422).json({ error: 'missing or invalid ciphertext field' });
@@ -131,6 +227,11 @@ export function createDevServer(config: DevConfig): express.Application {
 
   app.post('/v1/:keyName/rotate', (req, res) => {
     const { keyName } = req.params;
+    const scopeError = checkScope(config, req, keyName, 'rotate');
+    if (scopeError) {
+      res.status(403).json({ error: scopeError });
+      return;
+    }
     const ciphertext = req.body?.ciphertext;
     if (typeof ciphertext !== 'string') {
       res.status(422).json({ error: 'missing or invalid ciphertext field' });
@@ -166,6 +267,11 @@ export function createDevServer(config: DevConfig): express.Application {
 
   app.post('/v1/:keyName/verify-signature', (req, res) => {
     const { keyName } = req.params;
+    const scopeError = checkScope(config, req, keyName, 'verify');
+    if (scopeError) {
+      res.status(403).json({ error: scopeError });
+      return;
+    }
     const ciphertext = req.body?.ciphertext;
     const payloadHex = req.body?.payload;
     const signatureHex = req.body?.signature;
@@ -226,6 +332,125 @@ export function createDevServer(config: DevConfig): express.Application {
         return;
       }
       res.status(500).json({ error: 'signature verification failed' });
+    }
+  });
+
+  app.post('/v1/:keyName/proxy-substitute', async (req, res) => {
+    const { keyName } = req.params;
+    const scopeError = checkScope(config, req, keyName, 'proxy');
+    if (scopeError) {
+      res.status(403).json({ error: scopeError });
+      return;
+    }
+
+    const ciphertext = req.body?.ciphertext;
+    const outboundRequest = req.body?.request;
+    const placeholder =
+      typeof req.body?.placeholder === 'string' && req.body.placeholder.trim() !== ''
+        ? req.body.placeholder.trim()
+        : '{{SIMPLEVAULT_PLAINTEXT}}';
+    if (typeof ciphertext !== 'string' || typeof outboundRequest !== 'object' || outboundRequest === null) {
+      res.status(422).json({ error: 'missing or invalid fields: ciphertext, request' });
+      return;
+    }
+
+    if (typeof outboundRequest.method !== 'string' || typeof outboundRequest.url !== 'string') {
+      res.status(422).json({ error: 'request.method and request.url are required strings' });
+      return;
+    }
+
+    let parsedCiphertext: { keyVersion: number };
+    try {
+      parsedCiphertext = crypto.parseCipherText(ciphertext);
+    } catch {
+      res.status(422).json({ error: 'invalid ciphertext format' });
+      return;
+    }
+    const key = getKey(config, keyName, parsedCiphertext.keyVersion);
+    if (!key) {
+      res.status(500).json({
+        error: `key not found: ${keyName} (version ${parsedCiphertext.keyVersion})`,
+      });
+      return;
+    }
+
+    let plaintext: string;
+    try {
+      plaintext = crypto.decrypt(ciphertext, key).toString('utf8');
+    } catch {
+      res.status(500).json({ error: 'decryption failed' });
+      return;
+    }
+
+    const method = outboundRequest.method.toUpperCase();
+    const outboundUrlValue = outboundRequest.url.replaceAll(placeholder, plaintext);
+    let outboundUrl: URL;
+    try {
+      outboundUrl = new URL(outboundUrlValue);
+    } catch {
+      res.status(422).json({ error: 'invalid outbound URL after substitution' });
+      return;
+    }
+
+    if (
+      outboundUrl.protocol !== 'https:' &&
+      !(
+        outboundUrl.protocol === 'http:' &&
+        (outboundUrl.hostname === 'localhost' || outboundUrl.hostname === '127.0.0.1')
+      )
+    ) {
+      res.status(422).json({ error: 'outbound url must use https (http allowed only for localhost)' });
+      return;
+    }
+
+    if (!destinationAllowed(config, keyName, method, outboundUrl.hostname, outboundUrl.pathname)) {
+      res.status(403).json({ error: 'destination is not allowed for this key set' });
+      return;
+    }
+
+    const outboundHeaders = new Headers();
+    if (typeof outboundRequest.headers === 'object' && outboundRequest.headers !== null) {
+      for (const [name, value] of Object.entries(outboundRequest.headers as Record<string, unknown>)) {
+        if (typeof value !== 'string') {
+          continue;
+        }
+        if (name.toLowerCase() === 'host' || name.toLowerCase() === 'content-length') {
+          continue;
+        }
+        outboundHeaders.set(name, value.replaceAll(placeholder, plaintext));
+      }
+    }
+    let outboundBody: string | undefined = undefined;
+    if (typeof outboundRequest.body === 'string') {
+      outboundBody = outboundRequest.body.replaceAll(placeholder, plaintext);
+    }
+
+    try {
+      const upstreamResponse = await fetch(outboundUrl, {
+        method,
+        headers: outboundHeaders,
+        body: outboundBody,
+      });
+      const responseText = await upstreamResponse.text();
+      const responseHeaders: Record<string, string> = {};
+      upstreamResponse.headers.forEach((value, name) => {
+        if (
+          name.toLowerCase() === 'content-length' ||
+          name.toLowerCase() === 'transfer-encoding' ||
+          name.toLowerCase() === 'connection' ||
+          name.toLowerCase() === 'host'
+        ) {
+          return;
+        }
+        responseHeaders[name] = value;
+      });
+      res.status(upstreamResponse.status).json({
+        status: upstreamResponse.status,
+        headers: responseHeaders,
+        body: responseText,
+      });
+    } catch (error) {
+      res.status(502).json({ error: `upstream request failed: ${(error as Error).message}` });
     }
   });
 

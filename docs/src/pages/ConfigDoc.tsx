@@ -19,6 +19,11 @@ export default function ConfigDoc() {
       "1": "64-char-hex-key",
       "2": "64-char-hex-key"
     }
+  },
+  "outbound_destinations": {
+    "vault": [
+      { "host": "api.stripe.com", "path_prefix": "/v1/", "methods": ["POST"] }
+    ]
   }
 }`}
         </pre>
@@ -35,13 +40,13 @@ export default function ConfigDoc() {
             </p>
             <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1 mb-3">
               <li>If empty <code className="bg-black/30 px-1 rounded">[]</code>, no authentication is required</li>
-              <li>If non-empty, requests to <code className="bg-black/30 px-1 rounded">/encrypt</code>, <code className="bg-black/30 px-1 rounded">/decrypt</code>, <code className="bg-black/30 px-1 rounded">/rotate</code>, and <code className="bg-black/30 px-1 rounded">/verify-signature</code> must include a valid key and the key must be allowed for that key name and operation</li>
+              <li>If non-empty, requests to <code className="bg-black/30 px-1 rounded">/encrypt</code>, <code className="bg-black/30 px-1 rounded">/decrypt</code>, <code className="bg-black/30 px-1 rounded">/rotate</code>, <code className="bg-black/30 px-1 rounded">/verify-signature</code>, and <code className="bg-black/30 px-1 rounded">/proxy-substitute</code> must include a valid key and the key must be allowed for that key name and operation</li>
             </ul>
             <p className="text-sm text-[var(--text-muted)] mb-2 font-medium">Object form (per entry):</p>
             <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1">
               <li><code className="bg-black/30 px-1 rounded">value</code> (required) — The secret key string used to authenticate (e.g. Bearer token, <code className="bg-black/30 px-1 rounded">x-api-key</code> header)</li>
               <li><code className="bg-black/30 px-1 rounded">keys</code> (optional, default <code className="bg-black/30 px-1 rounded">"all"</code>) — Either the string <code className="bg-black/30 px-1 rounded">"all"</code> or an array of key set names (e.g. <code className="bg-black/30 px-1 rounded">["vault", "other"]</code>) this API key can access</li>
-              <li><code className="bg-black/30 px-1 rounded">operations</code> (optional, default <code className="bg-black/30 px-1 rounded">"all"</code>) — Either the string <code className="bg-black/30 px-1 rounded">"all"</code> or an array of allowed operations: <code className="bg-black/30 px-1 rounded">["encrypt", "decrypt", "rotate", "verify"]</code></li>
+              <li><code className="bg-black/30 px-1 rounded">operations</code> (optional, default <code className="bg-black/30 px-1 rounded">"all"</code>) — Either the string <code className="bg-black/30 px-1 rounded">"all"</code> or an array of allowed operations: <code className="bg-black/30 px-1 rounded">["encrypt", "decrypt", "rotate", "verify", "proxy"]</code></li>
             </ul>
             <p className="text-sm text-[var(--text-muted)] mt-2">
               <strong>Backwards compatible:</strong> a plain string (e.g. <code className="bg-black/30 px-1 rounded">"my-key"</code>) is treated as <code className="bg-black/30 px-1 rounded">keys: "all"</code> and <code className="bg-black/30 px-1 rounded">operations: "all"</code>.
@@ -66,6 +71,18 @@ export default function ConfigDoc() {
               <li>Multiple versions allow key rotation while decrypting old ciphertext</li>
             </ul>
           </div>
+
+          <div className="border border-[var(--border)] rounded-lg p-5 bg-[var(--surface-elevated)]">
+            <h3 className="font-mono font-semibold text-[var(--accent)] mb-2">outbound_destinations</h3>
+            <p className="text-[var(--text-muted)] text-sm mb-2">
+              Optional map of key set name to outbound destination allowlist rules for <code className="bg-black/30 px-1 rounded">proxy-substitute</code>.
+            </p>
+            <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1">
+              <li>Key is the key set name (for example <code className="bg-black/30 px-1 rounded">vault</code>)</li>
+              <li>Each rule requires <code className="bg-black/30 px-1 rounded">host</code> and may include <code className="bg-black/30 px-1 rounded">path_prefix</code> and <code className="bg-black/30 px-1 rounded">methods</code></li>
+              <li>If this object is missing, destinations are allowed by default</li>
+            </ul>
+          </div>
         </div>
       </section>
 
@@ -82,6 +99,11 @@ export default function ConfigDoc() {
       "1": "0000000000000000000000000000000000000000000000000000000000000000",
       "2": "1111111111111111111111111111111111111111111111111111111111111111"
     }
+  },
+  "outbound_destinations": {
+    "vault": [
+      { "host": "api.stripe.com", "path_prefix": "/v1/", "methods": ["POST"] }
+    ]
   }
 }`}
         </pre>

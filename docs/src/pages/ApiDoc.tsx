@@ -101,6 +101,38 @@ export default function ApiDoc() {
 
           <div className="border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--surface-elevated)]">
             <div className="px-5 py-3 border-b border-[var(--border)] flex items-center gap-3">
+              <span className="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-green-500/20 text-green-400">POST</span>
+              <code className="font-mono text-sm">/v1/{`{key_name}`}/proxy-substitute</code>
+            </div>
+            <div className="p-5">
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                Decrypt ciphertext internally, substitute plaintext into a placeholder token inside an outbound request, then return the upstream response.
+              </p>
+              <p className="text-sm font-medium mb-2">Request body:</p>
+              <pre className="bg-black/30 rounded p-4 text-sm font-mono mb-4">{`{
+  "ciphertext": "v1:...",
+  "placeholder": "{{SIMPLEVAULT_PLAINTEXT}}",
+  "request": {
+    "method": "POST",
+    "url": "https://api.stripe.com/v1/customers/{{SIMPLEVAULT_PLAINTEXT}}",
+    "headers": {
+      "authorization": "Bearer {{SIMPLEVAULT_PLAINTEXT}}",
+      "content-type": "application/json"
+    },
+    "body": "{\"token\":\"{{SIMPLEVAULT_PLAINTEXT}}\"}"
+  }
+}`}</pre>
+              <p className="text-sm font-medium mb-2">Response:</p>
+              <pre className="bg-black/30 rounded p-4 text-sm font-mono">{`{
+  "status": 200,
+  "headers": { "content-type": "application/json" },
+  "body": "{...upstream response body...}"
+}`}</pre>
+            </div>
+          </div>
+
+          <div className="border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--surface-elevated)]">
+            <div className="px-5 py-3 border-b border-[var(--border)] flex items-center gap-3">
               <span className="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-blue-500/20 text-blue-400">GET</span>
               <code className="font-mono text-sm">/v1/{`{key_name}`}/version</code>
             </div>
@@ -125,8 +157,9 @@ export default function ApiDoc() {
           <li><code className="bg-black/30 px-1 rounded">403</code> — API key does not have scope for the key name or operation</li>
           <li><code className="bg-black/30 px-1 rounded">404</code> — Unknown route</li>
           <li><code className="bg-black/30 px-1 rounded">405</code> — Wrong HTTP method</li>
-          <li><code className="bg-black/30 px-1 rounded">422</code> — Invalid request body (e.g. missing plaintext, malformed ciphertext, non-hex payload)</li>
+          <li><code className="bg-black/30 px-1 rounded">422</code> — Invalid request body (e.g. missing plaintext, malformed ciphertext, non-hex payload, invalid outbound URL)</li>
           <li><code className="bg-black/30 px-1 rounded">500</code> — Server error (e.g. key not found, decryption failed)</li>
+          <li><code className="bg-black/30 px-1 rounded">502</code> — Upstream request failed for proxy-substitute</li>
         </ul>
       </section>
 

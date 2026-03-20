@@ -18,7 +18,12 @@
  */
 
 export { SimpleVaultClient } from './client.js';
-export type { SimpleVaultClientOptions, VerifySignatureParams } from './client.js';
+export type {
+  ProxySubstituteRequest,
+  ProxySubstituteResponse,
+  SimpleVaultClientOptions,
+  VerifySignatureParams,
+} from './client.js';
 export {
   runDevServer,
   runDevServerWithWatch,
