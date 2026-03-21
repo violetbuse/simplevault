@@ -83,8 +83,9 @@ pub async fn execute_outbound_request(
     for (name, value) in outbound.headers {
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| anyhow::anyhow!("invalid outbound header name: {}", name))?;
-        let header_value = HeaderValue::from_str(&value)
-            .map_err(|_| anyhow::anyhow!("invalid outbound header value for {}: {}", name, value))?;
+        let header_value = HeaderValue::from_str(&value).map_err(|_| {
+            anyhow::anyhow!("invalid outbound header value for {}: {}", name, value)
+        })?;
         header_map.insert(header_name, header_value);
     }
     request_builder = request_builder.headers(header_map);

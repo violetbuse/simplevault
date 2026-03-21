@@ -199,6 +199,59 @@ describe('SimpleVault API contract', () => {
     });
   });
 
+  describe('POST /v1/:keyName/create-signature', () => {
+    it('creates hmac-sha256 signature with encrypted secret', async () => {
+      const secret = 'whsec_test_secret';
+      const encSecret = await request('POST', '/v1/vault/encrypt', { plaintext: secret });
+      assert.strictEqual(encSecret.status, 200, 'encrypt secret should succeed');
+      assert.ok(typeof encSecret.data?.ciphertext === 'string', 'encrypt should return ciphertext');
+
+      const payload = '{"id":"evt_test"}';
+      const payloadHex = Buffer.from(payload, 'utf8').toString('hex');
+      const expectedSignatureHex = createHmac('sha256', secret).update(payload, 'utf8').digest('hex');
+
+      const { status, data } = await request('POST', '/v1/vault/create-signature', {
+        ciphertext: encSecret.data.ciphertext,
+        payload: payloadHex,
+        algorithm: 'hmac-sha256',
+      });
+
+      assert.strictEqual(status, 200, `Expected 200, got ${status}`);
+      assert.strictEqual(data?.signature, expectedSignatureHex, `Expected deterministic signature, got ${JSON.stringify(data)}`);
+    });
+
+    it('returns 422 for non-hex payload', async () => {
+      const secret = 'whsec_test_secret';
+      const encSecret = await request('POST', '/v1/vault/encrypt', { plaintext: secret });
+      assert.strictEqual(encSecret.status, 200, 'encrypt secret should succeed');
+
+      const { status, data } = await request('POST', '/v1/vault/create-signature', {
+        ciphertext: encSecret.data.ciphertext,
+        payload: 'not-hex',
+        algorithm: 'hmac-sha256',
+      });
+
+      assert.strictEqual(status, 422, `Expected 422, got ${status}`);
+      assert.ok(data?.error, `Expected error field, got ${JSON.stringify(data)}`);
+    });
+
+    it('returns 500 for unsupported algorithm', async () => {
+      const secret = 'whsec_test_secret';
+      const encSecret = await request('POST', '/v1/vault/encrypt', { plaintext: secret });
+      assert.strictEqual(encSecret.status, 200, 'encrypt secret should succeed');
+
+      const payloadHex = Buffer.from('payload', 'utf8').toString('hex');
+      const { status, data } = await request('POST', '/v1/vault/create-signature', {
+        ciphertext: encSecret.data.ciphertext,
+        payload: payloadHex,
+        algorithm: 'rsa-sha256',
+      });
+
+      assert.strictEqual(status, 500, `Expected 500, got ${status}`);
+      assert.ok(data?.error, `Expected error field, got ${JSON.stringify(data)}`);
+    });
+  });
+
   describe('routing', () => {
     it('returns 404 for unknown path', async () => {
       const { status } = await request('GET', '/v1/vault/unknown');

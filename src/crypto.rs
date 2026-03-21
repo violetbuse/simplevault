@@ -142,7 +142,10 @@ impl SignatureAlgorithm {
             "hmac-sha1" | "sha1" => Ok(SignatureAlgorithm::HmacSha1),
             "hmac-sha256" | "sha256" => Ok(SignatureAlgorithm::HmacSha256),
             "hmac-sha512" | "sha512" => Ok(SignatureAlgorithm::HmacSha512),
-            _ => Err(anyhow::anyhow!("unsupported signature algorithm: {}", input)),
+            _ => Err(anyhow::anyhow!(
+                "unsupported signature algorithm: {}",
+                input
+            )),
         }
     }
 }
@@ -161,7 +164,11 @@ fn decode_hex_input(name: &str, value: &str) -> Result<Vec<u8>, anyhow::Error> {
     hex::decode(trimmed).map_err(|e| anyhow::anyhow!("invalid {} hex: {}", name, e))
 }
 
-fn verify_hmac_sha1(secret: &[u8], payload: &[u8], provided_signature: &[u8]) -> Result<bool, anyhow::Error> {
+fn verify_hmac_sha1(
+    secret: &[u8],
+    payload: &[u8],
+    provided_signature: &[u8],
+) -> Result<bool, anyhow::Error> {
     let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(secret)
         .map_err(|e| anyhow::anyhow!("invalid HMAC key: {}", e))?;
     mac.update(payload);
@@ -188,6 +195,27 @@ fn verify_hmac_sha512(
         .map_err(|e| anyhow::anyhow!("invalid HMAC key: {}", e))?;
     mac.update(payload);
     Ok(mac.verify_slice(provided_signature).is_ok())
+}
+
+fn sign_hmac_sha1(secret: &[u8], payload: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
+    let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(secret)
+        .map_err(|e| anyhow::anyhow!("invalid HMAC key: {}", e))?;
+    mac.update(payload);
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+fn sign_hmac_sha256(secret: &[u8], payload: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret)
+        .map_err(|e| anyhow::anyhow!("invalid HMAC key: {}", e))?;
+    mac.update(payload);
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+fn sign_hmac_sha512(secret: &[u8], payload: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
+    let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(secret)
+        .map_err(|e| anyhow::anyhow!("invalid HMAC key: {}", e))?;
+    mac.update(payload);
+    Ok(mac.finalize().into_bytes().to_vec())
 }
 
 pub fn verify_signature_with_encrypted_secret(
@@ -227,6 +255,22 @@ pub fn verify_signature_with_encrypted_secret_bytes(
         SignatureAlgorithm::HmacSha512 => {
             verify_hmac_sha512(secret.borrow().as_ref(), payload, signature)
         }
+    }
+}
+
+pub fn create_signature_with_encrypted_secret_bytes(
+    encrypted_secret: &CipherText,
+    key: &EncryptionKey,
+    payload: &[u8],
+    algorithm: &str,
+) -> Result<Vec<u8>, anyhow::Error> {
+    let secret = encrypted_secret.decrypt(key)?;
+    let parsed_algorithm = SignatureAlgorithm::parse(algorithm)?;
+
+    match parsed_algorithm {
+        SignatureAlgorithm::HmacSha1 => sign_hmac_sha1(secret.borrow().as_ref(), payload),
+        SignatureAlgorithm::HmacSha256 => sign_hmac_sha256(secret.borrow().as_ref(), payload),
+        SignatureAlgorithm::HmacSha512 => sign_hmac_sha512(secret.borrow().as_ref(), payload),
     }
 }
 
@@ -359,7 +403,8 @@ mod tests {
 
     #[test]
     fn encryption_key_deserialize_rejects_too_long() {
-        let json = r#""0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef""#;
+        let json =
+            r#""0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef""#;
         let result: Result<EncryptionKey, _> = serde_json::from_str(json);
         assert!(result.is_err());
     }
@@ -369,7 +414,13 @@ mod tests {
         let json = r#""zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz""#;
         let result: Result<EncryptionKey, _> = serde_json::from_str(json);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().to_lowercase().contains("hex"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .to_lowercase()
+                .contains("hex")
+        );
     }
 
     #[test]
@@ -446,7 +497,13 @@ mod tests {
         let ct = CipherText::encrypt(plaintext, &key1, 1).unwrap();
         let result = ct.decrypt(&key2);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().to_lowercase().contains("decrypt"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .to_lowercase()
+                .contains("decrypt")
+        );
     }
 
     #[test]
@@ -458,7 +515,10 @@ mod tests {
         let ct2 = CipherText::encrypt(pt2, &key, 1).unwrap();
         let s1 = serde_json::to_string(&ct1).unwrap();
         let s2 = serde_json::to_string(&ct2).unwrap();
-        assert_ne!(s1, s2, "different plaintexts should produce different ciphertexts");
+        assert_ne!(
+            s1, s2,
+            "different plaintexts should produce different ciphertexts"
+        );
     }
 
     #[test]
@@ -470,7 +530,10 @@ mod tests {
         let ct2 = CipherText::encrypt(pt2, &key, 1).unwrap();
         let s1 = serde_json::to_string(&ct1).unwrap();
         let s2 = serde_json::to_string(&ct2).unwrap();
-        assert_ne!(s1, s2, "same plaintext should get different nonces each time");
+        assert_ne!(
+            s1, s2,
+            "same plaintext should get different nonces each time"
+        );
     }
 
     // --- CipherText serialize/deserialize tests ---
@@ -488,7 +551,11 @@ mod tests {
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[0], "v7");
         assert!(parts[1].chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(parts[2].len(), 24, "nonce hex should be 12 bytes = 24 hex chars");
+        assert_eq!(
+            parts[2].len(),
+            24,
+            "nonce hex should be 12 bytes = 24 hex chars"
+        );
         assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
     }
 
@@ -527,7 +594,8 @@ mod tests {
 
     #[test]
     fn ciphertext_deserialize_rejects_missing_v_prefix() {
-        let json = r#""1:000000000000000000000000000000000000000000000000:000000000000000000000000""#;
+        let json =
+            r#""1:000000000000000000000000000000000000000000000000:000000000000000000000000""#;
         let result: Result<CipherText, _> = serde_json::from_str(json);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("v"));
@@ -535,22 +603,31 @@ mod tests {
 
     #[test]
     fn ciphertext_deserialize_rejects_invalid_key_version() {
-        let json = r#""vx:000000000000000000000000000000000000000000000000:000000000000000000000000""#;
+        let json =
+            r#""vx:000000000000000000000000000000000000000000000000:000000000000000000000000""#;
         let result: Result<CipherText, _> = serde_json::from_str(json);
         assert!(result.is_err());
     }
 
     #[test]
     fn ciphertext_deserialize_rejects_invalid_ciphertext_hex() {
-        let json = r#""v1:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz:000000000000000000000000""#;
+        let json =
+            r#""v1:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz:000000000000000000000000""#;
         let result: Result<CipherText, _> = serde_json::from_str(json);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().to_lowercase().contains("hex"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .to_lowercase()
+                .contains("hex")
+        );
     }
 
     #[test]
     fn ciphertext_deserialize_rejects_invalid_nonce_hex() {
-        let json = r#""v1:000000000000000000000000000000000000000000000000:zzzzzzzzzzzzzzzzzzzzzzzz""#;
+        let json =
+            r#""v1:000000000000000000000000000000000000000000000000:zzzzzzzzzzzzzzzzzzzzzzzz""#;
         let result: Result<CipherText, _> = serde_json::from_str(json);
         assert!(result.is_err());
     }
@@ -565,7 +642,8 @@ mod tests {
 
     #[test]
     fn ciphertext_deserialize_rejects_nonce_too_long() {
-        let json = r#""v1:000000000000000000000000000000000000000000000000:0000000000000000000000000000""#;
+        let json =
+            r#""v1:000000000000000000000000000000000000000000000000:0000000000000000000000000000""#;
         let result: Result<CipherText, _> = serde_json::from_str(json);
         assert!(result.is_err());
     }
@@ -613,11 +691,7 @@ mod tests {
         let s = serde_json::to_string(&ct).unwrap();
         let inner = s.trim_matches('"');
         let parts: Vec<&str> = inner.splitn(3, ':').collect();
-        let tampered = format!(
-            "\"{}:{}:ffffffffffffffffffffffff\"",
-            parts[0],
-            parts[1]
-        );
+        let tampered = format!("\"{}:{}:ffffffffffffffffffffffff\"", parts[0], parts[1]);
         let ct_tampered: CipherText = serde_json::from_str(&tampered).unwrap();
         let result = ct_tampered.decrypt(&key);
         assert!(result.is_err());
@@ -704,5 +778,78 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("hex"));
+    }
+
+    #[test]
+    fn create_signature_with_encrypted_secret_bytes_matches_hmac_sha256() {
+        let key = make_encryption_key();
+        let secret = make_plaintext("whsec_test_secret");
+        let encrypted_secret = CipherText::encrypt(secret, &key, 1).unwrap();
+        let payload = b"{\"id\":\"evt_test\"}";
+
+        let signature = create_signature_with_encrypted_secret_bytes(
+            &encrypted_secret,
+            &key,
+            payload,
+            "hmac-sha256",
+        )
+        .unwrap();
+
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(b"whsec_test_secret").unwrap();
+        mac.update(payload);
+        let expected = mac.finalize().into_bytes();
+        assert_eq!(signature, expected.as_slice());
+    }
+
+    #[test]
+    fn create_signature_with_encrypted_secret_bytes_accepts_sha_aliases() {
+        let key = make_encryption_key();
+        let secret = make_plaintext("whsec_test_secret");
+        let encrypted_secret = CipherText::encrypt(secret, &key, 1).unwrap();
+        let payload = b"payload";
+
+        let sha1_signature =
+            create_signature_with_encrypted_secret_bytes(&encrypted_secret, &key, payload, "sha1")
+                .unwrap();
+        let hmac_sha1_signature = create_signature_with_encrypted_secret_bytes(
+            &encrypted_secret,
+            &key,
+            payload,
+            "hmac-sha1",
+        )
+        .unwrap();
+        assert_eq!(sha1_signature, hmac_sha1_signature);
+
+        let sha512_signature = create_signature_with_encrypted_secret_bytes(
+            &encrypted_secret,
+            &key,
+            payload,
+            "sha512",
+        )
+        .unwrap();
+        let hmac_sha512_signature = create_signature_with_encrypted_secret_bytes(
+            &encrypted_secret,
+            &key,
+            payload,
+            "hmac-sha512",
+        )
+        .unwrap();
+        assert_eq!(sha512_signature, hmac_sha512_signature);
+    }
+
+    #[test]
+    fn create_signature_with_encrypted_secret_bytes_rejects_unknown_algorithm() {
+        let key = make_encryption_key();
+        let secret = make_plaintext("whsec_test_secret");
+        let encrypted_secret = CipherText::encrypt(secret, &key, 1).unwrap();
+        let payload = b"payload";
+
+        let result = create_signature_with_encrypted_secret_bytes(
+            &encrypted_secret,
+            &key,
+            payload,
+            "rsa-sha256",
+        );
+        assert!(result.is_err());
     }
 }

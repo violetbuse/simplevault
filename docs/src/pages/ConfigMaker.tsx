@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 
 type KeyVersions = Record<string, string>;
 
-const OPERATIONS = ["encrypt", "decrypt", "rotate", "verify", "proxy"] as const;
+const OPERATIONS = ["encrypt", "decrypt", "rotate", "verify", "sign", "proxy"] as const;
 type Operation = (typeof OPERATIONS)[number];
 
 interface ApiKeyEntry {
@@ -521,7 +521,7 @@ export default function ConfigMaker() {
           API Keys
         </h2>
         <p className="text-[var(--text-muted)] text-sm mb-4">
-          Leave value empty for no authentication. Each key can be restricted to specific key sets and operations (encrypt, decrypt, rotate, verify, proxy).
+          Leave value empty for no authentication. Each key can be restricted to specific key sets and operations (encrypt, decrypt, rotate, verify, sign, proxy).
         </p>
         <div className="space-y-6">
           {apiKeys.map((entry, i) => (

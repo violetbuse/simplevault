@@ -56,7 +56,13 @@ impl Config {
             .map(|(v, k)| (*v, k))
     }
 
-    pub fn destination_allowed(&self, key_name: &str, method: &str, host: &str, path: &str) -> bool {
+    pub fn destination_allowed(
+        &self,
+        key_name: &str,
+        method: &str,
+        host: &str,
+        path: &str,
+    ) -> bool {
         let rules = match self.outbound_destinations.get(key_name) {
             Some(value) => value,
             None => return true,
@@ -125,7 +131,7 @@ impl<'de> Deserialize<'de> for KeysScope {
     }
 }
 
-/// Allowed operation: encrypt, decrypt, rotate, or verify.
+/// Allowed operation: encrypt, decrypt, rotate, verify, sign, or proxy.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyOperation {
@@ -133,6 +139,7 @@ pub enum ApiKeyOperation {
     Decrypt,
     Rotate,
     Verify,
+    Sign,
     Proxy,
 }
 
@@ -173,6 +180,13 @@ impl OperationsScope {
         }
     }
 
+    pub fn allows_sign(&self) -> bool {
+        match self {
+            OperationsScope::All => true,
+            OperationsScope::List(ops) => ops.iter().any(|o| matches!(o, ApiKeyOperation::Sign)),
+        }
+    }
+
     pub fn allows_proxy(&self) -> bool {
         match self {
             OperationsScope::All => true,
@@ -195,7 +209,7 @@ impl OperationsScopeInput {
                 if s == "all" {
                     Ok(OperationsScope::All)
                 } else {
-                    Err("operations must be the string \"all\" or an array of \"encrypt\", \"decrypt\", \"rotate\", \"verify\", \"proxy\"".to_string())
+                    Err("operations must be the string \"all\" or an array of \"encrypt\", \"decrypt\", \"rotate\", \"verify\", \"sign\", \"proxy\"".to_string())
                 }
             }
             OperationsScopeInput::List(l) => Ok(OperationsScope::List(l)),
@@ -375,7 +389,10 @@ pub async fn delete_config(path: &Path) -> Result<(), anyhow::Error> {
 /// Read config from an environment variable containing base64-encoded JSON.
 /// The env var value must be the same JSON format as the file config.
 /// If `delete_after` is true, unsets the environment variable after reading.
-pub fn read_config_from_env(env_var_name: &str, delete_after: bool) -> Result<Config, anyhow::Error> {
+pub fn read_config_from_env(
+    env_var_name: &str,
+    delete_after: bool,
+) -> Result<Config, anyhow::Error> {
     let encoded = std::env::var(env_var_name)
         .map_err(|_| anyhow::anyhow!("Environment variable '{}' is not set", env_var_name))?;
 
@@ -383,10 +400,10 @@ pub fn read_config_from_env(env_var_name: &str, delete_after: bool) -> Result<Co
         .decode(&encoded)
         .map_err(|e| anyhow::anyhow!("Invalid base64 in env var '{}': {}", env_var_name, e))?;
 
-    let json_str = Zeroizing::new(
-        String::from_utf8(decoded)
-            .map_err(|e| anyhow::anyhow!("Env var '{}' is not valid UTF-8: {}", env_var_name, e))?,
-    );
+    let json_str =
+        Zeroizing::new(String::from_utf8(decoded).map_err(|e| {
+            anyhow::anyhow!("Env var '{}' is not valid UTF-8: {}", env_var_name, e)
+        })?);
 
     let config: Config = serde_json::from_str(&json_str)
         .map_err(|e| anyhow::anyhow!("Invalid config JSON in env var '{}': {}", env_var_name, e))?;
@@ -430,14 +447,13 @@ mod tests {
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
         assert!(key.operations_scope().allows_verify());
+        assert!(key.operations_scope().allows_sign());
         assert!(key.operations_scope().allows_proxy());
     }
 
     #[test]
     fn api_key_deserialize_from_object_with_value_only() {
-        let config = minimal_config(
-            r#"[{ "value": "object-key" }]"#,
-        );
+        let config = minimal_config(r#"[{ "value": "object-key" }]"#);
         assert!(config.validate_api_key("object-key"));
         let key = &config.api_keys()[0];
         assert!(key.matches("object-key"));
@@ -446,14 +462,14 @@ mod tests {
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
         assert!(key.operations_scope().allows_verify());
+        assert!(key.operations_scope().allows_sign());
         assert!(key.operations_scope().allows_proxy());
     }
 
     #[test]
     fn api_key_deserialize_from_object_with_explicit_all() {
-        let config = minimal_config(
-            r#"[{ "value": "full-key", "keys": "all", "operations": "all" }]"#,
-        );
+        let config =
+            minimal_config(r#"[{ "value": "full-key", "keys": "all", "operations": "all" }]"#);
         assert!(config.validate_api_key("full-key"));
         let key = &config.api_keys()[0];
         assert!(key.matches("full-key"));
@@ -462,6 +478,7 @@ mod tests {
         assert!(key.operations_scope().allows_decrypt());
         assert!(key.operations_scope().allows_rotate());
         assert!(key.operations_scope().allows_verify());
+        assert!(key.operations_scope().allows_sign());
         assert!(key.operations_scope().allows_proxy());
     }
 
@@ -484,6 +501,7 @@ mod tests {
         assert!(ops.allows_decrypt());
         assert!(!ops.allows_rotate());
         assert!(!ops.allows_verify());
+        assert!(!ops.allows_sign());
         assert!(!ops.allows_proxy());
     }
 
@@ -500,6 +518,7 @@ mod tests {
         assert!(matches!(string_key.keys_scope(), KeysScope::All));
         assert!(string_key.operations_scope().allows_rotate());
         assert!(string_key.operations_scope().allows_verify());
+        assert!(string_key.operations_scope().allows_sign());
         assert!(string_key.operations_scope().allows_proxy());
 
         let object_key = &config.api_keys()[1];
@@ -507,6 +526,7 @@ mod tests {
         assert!(!object_key.operations_scope().allows_decrypt());
         assert!(!object_key.operations_scope().allows_rotate());
         assert!(!object_key.operations_scope().allows_verify());
+        assert!(!object_key.operations_scope().allows_sign());
         assert!(!object_key.operations_scope().allows_proxy());
     }
 
@@ -548,21 +568,24 @@ mod tests {
         assert!(scope.allows_decrypt());
         assert!(scope.allows_rotate());
         assert!(scope.allows_verify());
+        assert!(scope.allows_sign());
         assert!(scope.allows_proxy());
     }
 
     #[test]
     fn operations_scope_deserialize_list() {
         let scope: OperationsScope =
-            serde_json::from_str(r#"["encrypt", "decrypt", "rotate", "verify", "proxy"]"#).unwrap();
+            serde_json::from_str(r#"["encrypt", "decrypt", "rotate", "verify", "sign", "proxy"]"#)
+                .unwrap();
         match &scope {
-            OperationsScope::List(ops) => assert_eq!(ops.len(), 5),
+            OperationsScope::List(ops) => assert_eq!(ops.len(), 6),
             OperationsScope::All => panic!("expected List"),
         }
         assert!(scope.allows_encrypt());
         assert!(scope.allows_decrypt());
         assert!(scope.allows_rotate());
         assert!(scope.allows_verify());
+        assert!(scope.allows_sign());
         assert!(scope.allows_proxy());
     }
 
@@ -573,6 +596,7 @@ mod tests {
         assert!(!scope.allows_decrypt());
         assert!(!scope.allows_rotate());
         assert!(!scope.allows_verify());
+        assert!(!scope.allows_sign());
         assert!(!scope.allows_proxy());
     }
 
@@ -587,7 +611,10 @@ mod tests {
     fn api_key_object_requires_value() {
         let json = r#"{"api_keys": [{"keys": "all", "operations": "all"}], "server_port": 8080, "keys": {}}"#;
         let result = serde_json::from_str::<Config>(json);
-        assert!(result.is_err(), "object without value field must be rejected");
+        assert!(
+            result.is_err(),
+            "object without value field must be rejected"
+        );
     }
 
     #[test]

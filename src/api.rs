@@ -2,7 +2,10 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::crypto::{CipherText, verify_signature_with_encrypted_secret_bytes};
+use crate::crypto::{
+    CipherText, create_signature_with_encrypted_secret_bytes,
+    verify_signature_with_encrypted_secret_bytes,
+};
 use crate::proxy_substitute;
 use axum::{
     Json, Router,
@@ -281,6 +284,18 @@ struct VerifySignatureResponse {
     verified: bool,
 }
 
+#[derive(Deserialize)]
+struct CreateSignatureRequest {
+    ciphertext: CipherText,
+    payload: String,
+    algorithm: String,
+}
+
+#[derive(Serialize)]
+struct CreateSignatureResponse {
+    signature: String,
+}
+
 async fn encrypt_handler(
     Path(KeyNamePath { key_name }): Path<KeyNamePath>,
     State(state): State<AppState>,
@@ -426,7 +441,9 @@ async fn verify_signature_handler(
         Err(e) => {
             return (
                 StatusCode::UNPROCESSABLE_ENTITY,
-                Json(serde_json::json!({ "error": format!("signature must be hex-encoded: {}", e) })),
+                Json(
+                    serde_json::json!({ "error": format!("signature must be hex-encoded: {}", e) }),
+                ),
             )
                 .into_response();
         }
@@ -440,6 +457,56 @@ async fn verify_signature_handler(
         &body.algorithm,
     ) {
         Ok(verified) => Json(VerifySignatureResponse { verified }).into_response(),
+        Err(e) => ApiError(e.into()).into_response(),
+    }
+}
+
+async fn create_signature_handler(
+    Path(KeyNamePath { key_name }): Path<KeyNamePath>,
+    State(state): State<AppState>,
+    AuthenticatedKeyExt(mut auth_key): AuthenticatedKeyExt,
+    ApiJson(body): ApiJson<CreateSignatureRequest>,
+) -> Response {
+    if let Some(r) = check_scope(&state, auth_key.as_deref(), &key_name, |ops| {
+        ops.allows_sign()
+    }) {
+        return r;
+    }
+    auth_key.zeroize();
+
+    let key = match state.config.get_key(&key_name, body.ciphertext.key_version) {
+        Some(k) => k,
+        None => {
+            return ApiError(anyhow::anyhow!(
+                "key not found: {} (version {})",
+                key_name,
+                body.ciphertext.key_version
+            ))
+            .into_response();
+        }
+    };
+
+    let payload_bytes = match hex::decode(body.payload.trim()) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": format!("payload must be hex-encoded: {}", e) })),
+            )
+                .into_response();
+        }
+    };
+
+    match create_signature_with_encrypted_secret_bytes(
+        &body.ciphertext,
+        key,
+        &payload_bytes,
+        &body.algorithm,
+    ) {
+        Ok(signature) => Json(CreateSignatureResponse {
+            signature: hex::encode(signature),
+        })
+        .into_response(),
         Err(e) => ApiError(e.into()).into_response(),
     }
 }
@@ -548,7 +615,14 @@ fn build_router(config: Config) -> Router {
         .route("/v1/{key_name}/encrypt", post(encrypt_handler))
         .route("/v1/{key_name}/decrypt", post(decrypt_handler))
         .route("/v1/{key_name}/rotate", post(rotate_handler))
-        .route("/v1/{key_name}/verify-signature", post(verify_signature_handler))
+        .route(
+            "/v1/{key_name}/create-signature",
+            post(create_signature_handler),
+        )
+        .route(
+            "/v1/{key_name}/verify-signature",
+            post(verify_signature_handler),
+        )
         .route(
             "/v1/{key_name}/proxy-substitute",
             post(proxy_substitute_handler),
@@ -771,6 +845,18 @@ mod tests {
     fn config_with_operations_verify_only() -> Config {
         let json = r#"{
             "api_keys": [{ "value": "verify-only-key", "keys": "all", "operations": ["verify"] }],
+            "server_port": 8080,
+            "keys": {
+                "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// Config with one API key allowed only for sign operation.
+    fn config_with_operations_sign_only() -> Config {
+        let json = r#"{
+            "api_keys": [{ "value": "sign-only-key", "keys": "all", "operations": ["sign"] }],
             "server_port": 8080,
             "keys": {
                 "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
@@ -1012,6 +1098,20 @@ mod tests {
             .header("x-api-key", "encrypt-decrypt-key")
             .body(Body::from(
                 r#"{"ciphertext":"v1:deadbeef:000000000000000000000000","payload":"78","signature":"aa","algorithm":"hmac-sha256"}"#,
+            ))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn scope_operations_forbids_sign_when_not_in_list() {
+        let app = build_router(config_with_operations_encrypt_decrypt_only());
+        let req = Request::post("/v1/vault/create-signature")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(
+                r#"{"ciphertext":"v1:deadbeef:000000000000000000000000","payload":"78","algorithm":"hmac-sha256"}"#,
             ))
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
@@ -1332,6 +1432,135 @@ mod tests {
             .unwrap();
         let verify_resp = key_only_encrypt_app.oneshot(verify_req).await.unwrap();
         assert_eq!(verify_resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // --- Create signature handler tests ---
+
+    #[tokio::test]
+    async fn create_signature_hmac_sha256_roundtrip() {
+        let app = build_router(config_no_auth());
+
+        let secret_encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"plaintext":"whsec_test_secret"}"#))
+            .unwrap();
+        let secret_encrypt_resp = app.clone().oneshot(secret_encrypt_req).await.unwrap();
+        assert_eq!(secret_encrypt_resp.status(), StatusCode::OK);
+        let secret_body = read_body(secret_encrypt_resp).await;
+        let secret_parsed: serde_json::Value = serde_json::from_slice(&secret_body).unwrap();
+        let ciphertext = secret_parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let payload = "{\"id\":\"evt_test\"}";
+        let payload_hex = hex::encode(payload.as_bytes());
+        let expected_signature = {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(b"whsec_test_secret").unwrap();
+            mac.update(payload.as_bytes());
+            hex::encode(mac.finalize().into_bytes())
+        };
+
+        let create_req = Request::post("/v1/vault/create-signature")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "payload": payload_hex,
+                    "algorithm": "hmac-sha256"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let create_resp = app.oneshot(create_req).await.unwrap();
+        assert_eq!(create_resp.status(), StatusCode::OK);
+        let create_body = read_body(create_resp).await;
+        let create_parsed: serde_json::Value = serde_json::from_slice(&create_body).unwrap();
+        assert_eq!(
+            create_parsed["signature"].as_str().unwrap(),
+            expected_signature
+        );
+    }
+
+    #[tokio::test]
+    async fn create_signature_rejects_non_hex_payload() {
+        let app = build_router(config_no_auth());
+
+        let secret_encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"plaintext":"whsec_test_secret"}"#))
+            .unwrap();
+        let secret_encrypt_resp = app.clone().oneshot(secret_encrypt_req).await.unwrap();
+        assert_eq!(secret_encrypt_resp.status(), StatusCode::OK);
+        let secret_body = read_body(secret_encrypt_resp).await;
+        let secret_parsed: serde_json::Value = serde_json::from_slice(&secret_body).unwrap();
+        let ciphertext = secret_parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let create_req = Request::post("/v1/vault/create-signature")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "payload": "not-hex",
+                    "algorithm": "hmac-sha256"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let create_resp = app.oneshot(create_req).await.unwrap();
+        assert_eq!(create_resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn create_signature_requires_sign_scope() {
+        let app = build_router(config_with_operations_sign_only());
+
+        let secret_encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "sign-only-key")
+            .body(Body::from(r#"{"plaintext":"secret"}"#))
+            .unwrap();
+        let secret_encrypt_resp = app.clone().oneshot(secret_encrypt_req).await.unwrap();
+        assert_eq!(secret_encrypt_resp.status(), StatusCode::FORBIDDEN);
+
+        let key_only_encrypt_app = build_router(config_with_operations_encrypt_decrypt_only());
+        let create_req = Request::post("/v1/vault/create-signature")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(
+                r#"{"ciphertext":"v1:deadbeef:000000000000000000000000","payload":"78","algorithm":"hmac-sha256"}"#,
+            ))
+            .unwrap();
+        let create_resp = key_only_encrypt_app.oneshot(create_req).await.unwrap();
+        assert_eq!(create_resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_signature_rejects_unknown_algorithm() {
+        let app = build_router(config_no_auth());
+
+        let secret_encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"plaintext":"whsec_test_secret"}"#))
+            .unwrap();
+        let secret_encrypt_resp = app.clone().oneshot(secret_encrypt_req).await.unwrap();
+        assert_eq!(secret_encrypt_resp.status(), StatusCode::OK);
+        let secret_body = read_body(secret_encrypt_resp).await;
+        let secret_parsed: serde_json::Value = serde_json::from_slice(&secret_body).unwrap();
+        let ciphertext = secret_parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let create_req = Request::post("/v1/vault/create-signature")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "payload": "7061796c6f6164",
+                    "algorithm": "rsa-sha256"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let create_resp = app.oneshot(create_req).await.unwrap();
+        assert_eq!(create_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     // --- Version handler tests ---

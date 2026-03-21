@@ -10,7 +10,7 @@ export interface DevConfig {
   outbound_destinations?: Record<string, OutboundDestinationRule[]>;
 }
 
-export type ApiKeyOperation = 'encrypt' | 'decrypt' | 'rotate' | 'verify' | 'proxy';
+export type ApiKeyOperation = 'encrypt' | 'decrypt' | 'rotate' | 'verify' | 'sign' | 'proxy';
 
 export interface ApiKeyConfigObject {
   value: string;

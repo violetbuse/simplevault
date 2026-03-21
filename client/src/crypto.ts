@@ -138,3 +138,12 @@ export function verifyHmacSignature(
   if (expected.length !== signature.length) return false;
   return timingSafeEqual(expected, signature);
 }
+
+export function createHmacSignature(
+  secret: Buffer,
+  payload: Buffer,
+  algorithm: VerifyAlgorithm | string
+): Buffer {
+  const digestAlgo = normalizeVerifyAlgorithm(algorithm);
+  return createHmac(digestAlgo, secret).update(payload).digest();
+}

@@ -335,6 +335,66 @@ export function createDevServer(config: DevConfig): express.Application {
     }
   });
 
+  app.post('/v1/:keyName/create-signature', (req, res) => {
+    const { keyName } = req.params;
+    const scopeError = checkScope(config, req, keyName, 'sign');
+    if (scopeError) {
+      res.status(403).json({ error: scopeError });
+      return;
+    }
+    const ciphertext = req.body?.ciphertext;
+    const payloadHex = req.body?.payload;
+    const algorithm = req.body?.algorithm;
+
+    if (
+      typeof ciphertext !== 'string' ||
+      typeof payloadHex !== 'string' ||
+      typeof algorithm !== 'string'
+    ) {
+      res.status(422).json({
+        error: 'missing or invalid fields: ciphertext, payload, algorithm',
+      });
+      return;
+    }
+
+    let parsed: { keyVersion: number };
+    try {
+      parsed = crypto.parseCipherText(ciphertext);
+    } catch {
+      res.status(422).json({ error: 'invalid ciphertext format' });
+      return;
+    }
+
+    const key = getKey(config, keyName, parsed.keyVersion);
+    if (!key) {
+      res.status(500).json({
+        error: `key not found: ${keyName} (version ${parsed.keyVersion})`,
+      });
+      return;
+    }
+
+    let payload: Buffer;
+    try {
+      payload = crypto.decodeHexInput('payload', payloadHex);
+    } catch (err) {
+      res.status(422).json({ error: (err as Error).message });
+      return;
+    }
+
+    try {
+      const secret = crypto.decrypt(ciphertext, key);
+      const signature = crypto.createHmacSignature(secret, payload, algorithm);
+      res.json({ signature: signature.toString('hex') });
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message.startsWith('unsupported signature algorithm')) {
+        res.status(500).json({ error: message });
+        return;
+      }
+      res.status(500).json({ error: 'signature creation failed' });
+    }
+  });
+
   app.post('/v1/:keyName/proxy-substitute', async (req, res) => {
     const { keyName } = req.params;
     const scopeError = checkScope(config, req, keyName, 'proxy');
