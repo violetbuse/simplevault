@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 
 type KeyVersions = Record<string, string>;
 
-const OPERATIONS = ["encrypt", "decrypt", "rotate", "verify", "sign", "proxy"] as const;
+const OPERATIONS = ["encrypt", "decrypt", "rotate", "verify", "sign", "proxy", "db_query"] as const;
 type Operation = (typeof OPERATIONS)[number];
 
 interface ApiKeyEntry {
@@ -16,6 +16,7 @@ interface ConfigState {
   serverPort: number;
   keyNames: Record<string, KeyVersions>;
   outboundDestinations: Record<string, Array<{ host: string; path_prefix?: string; methods?: string[] }>>;
+  dbDestinations: Record<string, Array<{ host: string; port?: number }>>;
 }
 
 interface OutboundDestinationRule {
@@ -65,6 +66,7 @@ function buildConfig(state: ConfigState): object {
     server_port: state.serverPort,
     keys,
     outbound_destinations: state.outboundDestinations,
+    db_destinations: state.dbDestinations,
   };
 }
 
@@ -89,6 +91,7 @@ export default function ConfigMaker() {
   const [importFormat, setImportFormat] = useState<"json" | "base64">("json");
   const [importError, setImportError] = useState<string | null>(null);
   const [outboundDestinations, setOutboundDestinations] = useState<Record<string, OutboundDestinationRule[]>>({});
+  const [dbDestinations, setDbDestinations] = useState<Record<string, Array<{ host: string; port: string }>>>({});
 
   const serverPortValidation = (() => {
     const trimmed = serverPortInput.trim();
@@ -159,6 +162,11 @@ export default function ConfigMaker() {
       delete next[name];
       return next;
     });
+    setDbDestinations((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
   }, []);
 
   const startRenameKeySet = useCallback((name: string) => {
@@ -184,6 +192,14 @@ export default function ConfigMaker() {
     setOutboundDestinations((prev) => {
       if (!(renamingKey in prev)) return prev;
       const next: Record<string, OutboundDestinationRule[]> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        next[k === renamingKey ? newName : k] = v;
+      }
+      return next;
+    });
+    setDbDestinations((prev) => {
+      if (!(renamingKey in prev)) return prev;
+      const next: Record<string, Array<{ host: string; port: string }>> = {};
       for (const [k, v] of Object.entries(prev)) {
         next[k === renamingKey ? newName : k] = v;
       }
@@ -293,6 +309,56 @@ export default function ConfigMaker() {
     });
   }, []);
 
+  const addDbDestinationRule = useCallback((keySet: string) => {
+    setDbDestinations((prev) => ({
+      ...prev,
+      [keySet]: [...(prev[keySet] ?? []), { host: "", port: "" }],
+    }));
+  }, []);
+
+  const removeDbDestinationRule = useCallback((keySet: string, index: number) => {
+    setDbDestinations((prev) => {
+      const rules = (prev[keySet] ?? []).filter((_, i) => i !== index);
+      if (rules.length === 0) {
+        const next = { ...prev };
+        delete next[keySet];
+        return next;
+      }
+      return { ...prev, [keySet]: rules };
+    });
+  }, []);
+
+  const updateDbDestinationRule = useCallback(
+    (keySet: string, index: number, field: "host" | "port", value: string) => {
+      setDbDestinations((prev) => {
+        const rules = [...(prev[keySet] ?? [])];
+        const existing = rules[index] ?? { host: "", port: "" };
+        rules[index] = {
+          ...existing,
+          [field]: value,
+        };
+        return { ...prev, [keySet]: rules };
+      });
+    },
+    []
+  );
+
+  const enableDbDestinationPolicy = useCallback((keySet: string) => {
+    setDbDestinations((prev) => {
+      if (keySet in prev) return prev;
+      return { ...prev, [keySet]: [] };
+    });
+  }, []);
+
+  const disableDbDestinationPolicy = useCallback((keySet: string) => {
+    setDbDestinations((prev) => {
+      if (!(keySet in prev)) return prev;
+      const next = { ...prev };
+      delete next[keySet];
+      return next;
+    });
+  }, []);
+
   const serverPort = serverPortValidation.valid ? serverPortValidation.value : 0;
   const hasValidKeys = (() => {
     for (const versions of Object.values(keyNames)) {
@@ -325,8 +391,36 @@ export default function ConfigMaker() {
     }
     return result;
   })();
+  const normalizedDbDestinations = (() => {
+    const result: Record<string, Array<{ host: string; port?: number }>> = {};
+    for (const keySet of Object.keys(dbDestinations)) {
+      const rules = dbDestinations[keySet] ?? [];
+      const normalizedRules = rules
+        .map((rule) => {
+          const host = rule.host.trim();
+          if (!host) return null;
+          const parsedPort = rule.port.trim() === "" ? null : Number.parseInt(rule.port.trim(), 10);
+          if (parsedPort !== null && (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535)) {
+            return null;
+          }
+          return {
+            host,
+            ...(parsedPort !== null ? { port: parsedPort } : {}),
+          };
+        })
+        .filter((rule): rule is { host: string; port?: number } => rule !== null);
+      result[keySet] = normalizedRules;
+    }
+    return result;
+  })();
   const config = configValid
-    ? buildConfig({ apiKeys, serverPort, keyNames, outboundDestinations: normalizedOutboundDestinations })
+    ? buildConfig({
+        apiKeys,
+        serverPort,
+        keyNames,
+        outboundDestinations: normalizedOutboundDestinations,
+        dbDestinations: normalizedDbDestinations,
+      })
     : null;
   const jsonStr = config !== null ? JSON.stringify(config, null, 2) : "";
   const base64Str =
@@ -445,6 +539,25 @@ export default function ConfigMaker() {
         setOutboundDestinations(parsedDestinations);
       } else {
         setOutboundDestinations({});
+      }
+      const dbDestinations = obj.db_destinations;
+      if (typeof dbDestinations === "object" && dbDestinations !== null && !Array.isArray(dbDestinations)) {
+        const parsedDestinations: Record<string, Array<{ host: string; port: string }>> = {};
+        for (const [keySet, ruleList] of Object.entries(dbDestinations as Record<string, unknown>)) {
+          if (!Array.isArray(ruleList)) continue;
+          parsedDestinations[keySet] = ruleList
+            .map((rule) => {
+              if (typeof rule !== "object" || rule === null) return null;
+              const value = rule as Record<string, unknown>;
+              const host = typeof value.host === "string" ? value.host : "";
+              const port = typeof value.port === "number" ? String(value.port) : "";
+              return { host, port };
+            })
+            .filter((rule): rule is { host: string; port: string } => rule !== null);
+        }
+        setDbDestinations(parsedDestinations);
+      } else {
+        setDbDestinations({});
       }
       setImportInput("");
       setImportError(null);
@@ -780,6 +893,102 @@ export default function ConfigMaker() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">
+          DB Destination Policy
+        </h2>
+        <p className="text-[var(--text-muted)] text-sm mb-4">
+          Optional per-key-set host/port allow rules for <code className="bg-black/30 px-1 rounded">db-query</code>.
+          If policy is not configured for a key set, DB destinations are allowed by default.
+        </p>
+        <div className="space-y-4">
+          {Object.keys(keyNames).length === 0 && (
+            <p className="text-sm text-[var(--text-muted)]">Add at least one key set first.</p>
+          )}
+          {Object.keys(keyNames).map((keySet) => {
+            const policyConfigured = keySet in dbDestinations;
+            const rules = dbDestinations[keySet] ?? [];
+            return (
+              <div
+                key={`db-${keySet}`}
+                className="border border-[var(--border)] rounded-lg p-4 bg-[var(--surface-elevated)] space-y-3"
+              >
+                <div className="flex items-center justify-between">
+                  <h3 className="font-mono font-semibold text-[var(--accent)]">{keySet}</h3>
+                  {policyConfigured ? (
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => addDbDestinationRule(keySet)}
+                        className="text-sm text-[var(--accent)] hover:text-[var(--accent-muted)]"
+                      >
+                        + Add rule
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => disableDbDestinationPolicy(keySet)}
+                        className="text-sm text-[var(--text-muted)] hover:text-red-400"
+                      >
+                        Disable policy
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => enableDbDestinationPolicy(keySet)}
+                      className="text-sm text-[var(--accent)] hover:text-[var(--accent-muted)]"
+                    >
+                      Configure policy
+                    </button>
+                  )}
+                </div>
+                {!policyConfigured ? (
+                  <p className="text-sm text-[var(--text-muted)]">
+                    No policy configured. Destinations are allowed by default for this key set.
+                  </p>
+                ) : rules.length === 0 ? (
+                  <p className="text-sm text-[var(--text-muted)]">
+                    No rules configured. This key set will not be allowed to run DB queries.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {rules.map((rule, idx) => (
+                      <div key={`db-rule-${keySet}-${idx}`} className="border border-[var(--border)] rounded-lg p-3 space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <input
+                            type="text"
+                            value={rule.host}
+                            onChange={(e) => updateDbDestinationRule(keySet, idx, "host", e.target.value)}
+                            placeholder="Host (e.g. db.internal)"
+                            className="bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                          />
+                          <input
+                            type="text"
+                            value={rule.port}
+                            onChange={(e) => updateDbDestinationRule(keySet, idx, "port", e.target.value)}
+                            placeholder="Port (optional, default any)"
+                            className="bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                          />
+                        </div>
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => removeDbDestinationRule(keySet, idx)}
+                            className="text-sm text-[var(--text-muted)] hover:text-red-400"
+                          >
+                            Remove rule
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

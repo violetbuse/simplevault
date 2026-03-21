@@ -15,6 +15,10 @@ import { createServer } from 'node:http';
 
 const BASE_URL = (process.env.SIMPLEVAULT_BASE_URL || 'http://localhost:8080').replace(/\/$/, '');
 const API_KEY = process.env.SIMPLEVAULT_API_KEY || 'contract-test-key';
+const ENABLE_DB_TESTS = process.env.SIMPLEVAULT_ENABLE_DB_TESTS === '1';
+const TEST_DB_URL =
+  process.env.SIMPLEVAULT_TEST_DB_URL ||
+  'postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test';
 
 async function request(method, path, body = undefined, apiKey = API_KEY) {
   const url = `${BASE_URL}${path}`;
@@ -349,6 +353,177 @@ describe('SimpleVault API contract', () => {
       });
       assert.strictEqual(result.status, 422, `Expected 422, got ${result.status}`);
       assert.ok(result.data?.error);
+    });
+  });
+
+  describe('POST /v1/:keyName/db-query', () => {
+    it('executes query against postgres when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request('POST', '/v1/vault/encrypt', {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: 'select $1::int as n, $2::text as t',
+          params: [7, 'ok'],
+        },
+        options: {
+          timeout_ms: 3000,
+          max_rows: 100,
+        },
+      });
+      assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}`);
+      assert.strictEqual(result.data?.row_count, 1);
+      assert.strictEqual(result.data?.rows?.[0]?.[0], 7);
+      assert.strictEqual(result.data?.rows?.[0]?.[1], 'ok');
+    });
+
+    it('returns 403 when DB destination is not allowed', async () => {
+      const encrypted = await request('POST', '/v1/vault/encrypt', {
+        plaintext: 'postgres://user:pass@db-not-allowed.internal:5432/app',
+      });
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: { sql: 'select 1' },
+      });
+      assert.strictEqual(result.status, 403, `Expected 403, got ${result.status}`);
+      assert.ok(result.data?.error?.includes('database destination is not allowed'));
+    });
+
+    it('returns 403 without db_query operation scope', async () => {
+      const encrypted = await request(
+        'POST',
+        '/v1/limited/encrypt',
+        { plaintext: 'postgres://user:pass@127.0.0.1:5432/app' },
+        'limited-contract-key'
+      );
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request(
+        'POST',
+        '/v1/limited/db-query',
+        {
+          ciphertext: encrypted.data.ciphertext,
+          query: { sql: 'select 1' },
+        },
+        'limited-contract-key'
+      );
+      assert.strictEqual(result.status, 403, `Expected 403, got ${result.status}`);
+      assert.ok(result.data?.error?.includes('not allowed for this operation'));
+    });
+
+    it('returns descriptive SQL errors when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request('POST', '/v1/vault/encrypt', {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: 'select missing_column from (select 1 as n) t',
+        },
+      });
+      assert.strictEqual(result.status, 422, `Expected 422, got ${result.status}`);
+      assert.ok(typeof result.data?.error === 'string', `Expected error string, got ${JSON.stringify(result.data)}`);
+      assert.ok(
+        result.data.error.includes('database error ['),
+        `Expected SQLSTATE/code in error message, got ${result.data.error}`
+      );
+      assert.ok(
+        result.data.error.toLowerCase().includes('missing_column') ||
+          result.data.error.toLowerCase().includes('column'),
+        `Expected column context in error message, got ${result.data.error}`
+      );
+    });
+
+    it('supports typed jsonb and varchar params when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request('POST', '/v1/vault/encrypt', {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: "select $1::jsonb->>'kind' as kind, $2::varchar as label",
+          params: [
+            { param_type: 'jsonb', value: { kind: 'customer' } },
+            { param_type: 'varchar', value: 'gold' },
+          ],
+        },
+      });
+
+      assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}`);
+      assert.strictEqual(result.data?.row_count, 1);
+      assert.strictEqual(result.data?.rows?.[0]?.[0], 'customer');
+      assert.strictEqual(result.data?.rows?.[0]?.[1], 'gold');
+    });
+
+    it('supports untyped object and array params as json when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request('POST', '/v1/vault/encrypt', {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: "select $1::jsonb->>'kind' as kind, jsonb_array_length($2::jsonb) as n",
+          params: [{ kind: 'customer' }, [1, 2, 3]],
+        },
+      });
+
+      assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}`);
+      assert.strictEqual(result.data?.row_count, 1);
+      assert.strictEqual(result.data?.rows?.[0]?.[0], 'customer');
+      assert.strictEqual(result.data?.rows?.[0]?.[1], 3);
+    });
+
+    it('preserves select column order when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request('POST', '/v1/vault/encrypt', {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: 'select 1 as z, 2 as a, 3 as m',
+        },
+      });
+
+      assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}`);
+      assert.strictEqual(result.data?.columns?.[0]?.name, 'z');
+      assert.strictEqual(result.data?.columns?.[1]?.name, 'a');
+      assert.strictEqual(result.data?.columns?.[2]?.name, 'm');
+      assert.strictEqual(result.data?.rows?.[0]?.[0], 1);
+      assert.strictEqual(result.data?.rows?.[0]?.[1], 2);
+      assert.strictEqual(result.data?.rows?.[0]?.[2], 3);
     });
   });
 });

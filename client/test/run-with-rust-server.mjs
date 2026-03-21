@@ -9,12 +9,13 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
 const RUST_BIN = join(ROOT, 'target', 'release', 'simplevault');
-const CONFIG_PATH = join(__dirname, 'config.json');
+const BASE_CONFIG_PATH = join(__dirname, 'config.json');
 
 async function findFreePort() {
   return await new Promise((resolve, reject) => {
@@ -90,10 +91,28 @@ function runTests(baseUrl) {
   });
 }
 
+function createRuntimeConfigPath() {
+  const runtimeConfigPath = join(__dirname, `config.runtime.${process.pid}.json`);
+  const parsed = JSON.parse(readFileSync(BASE_CONFIG_PATH, 'utf8'));
+  const testDbUrl = process.env.SIMPLEVAULT_TEST_DB_URL;
+  if (testDbUrl) {
+    const url = new URL(testDbUrl);
+    const host = url.hostname;
+    const port = url.port ? Number.parseInt(url.port, 10) : 5432;
+    if (!parsed.db_destinations) {
+      parsed.db_destinations = {};
+    }
+    parsed.db_destinations.vault = [{ host, port }];
+  }
+  writeFileSync(runtimeConfigPath, JSON.stringify(parsed, null, 2), 'utf8');
+  return runtimeConfigPath;
+}
+
 async function main() {
   const port = await findFreePort();
   const baseUrl = `http://localhost:${port}`;
-  const server = spawn(RUST_BIN, [CONFIG_PATH, '--keep-config', '--port', String(port)], {
+  const runtimeConfigPath = createRuntimeConfigPath();
+  const server = spawn(RUST_BIN, [runtimeConfigPath, '--keep-config', '--port', String(port)], {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
@@ -110,6 +129,11 @@ async function main() {
     exitCode = await runTests(baseUrl);
   } finally {
     await killAndWait(server, 5000);
+    try {
+      unlinkSync(runtimeConfigPath);
+    } catch {
+      // ignore cleanup errors
+    }
   }
 
   process.exit(exitCode);

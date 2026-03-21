@@ -1,11 +1,13 @@
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::crypto::{
     CipherText, create_signature_with_encrypted_secret_bytes,
     verify_signature_with_encrypted_secret_bytes,
 };
+use crate::db_query;
 use crate::proxy_substitute;
 use axum::{
     Json, Router,
@@ -98,6 +100,7 @@ impl<'de> Deserialize<'de> for PlainTextObject {
 struct AppState {
     config: Arc<Config>,
     http_client: reqwest::Client,
+    db_pool_cache: db_query::DbPoolCache,
 }
 
 /// Stored in request extensions by auth middleware when API key auth succeeds.
@@ -294,6 +297,29 @@ struct CreateSignatureRequest {
 #[derive(Serialize)]
 struct CreateSignatureResponse {
     signature: String,
+}
+
+#[derive(Deserialize)]
+struct DbQueryRequest {
+    ciphertext: CipherText,
+    query: DbQueryPayload,
+    #[serde(default)]
+    options: Option<DbQueryOptions>,
+}
+
+#[derive(Deserialize)]
+struct DbQueryPayload {
+    sql: String,
+    #[serde(default)]
+    params: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Deserialize)]
+struct DbQueryOptions {
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    max_rows: Option<usize>,
 }
 
 async fn encrypt_handler(
@@ -511,6 +537,105 @@ async fn create_signature_handler(
     }
 }
 
+async fn db_query_handler(
+    Path(KeyNamePath { key_name }): Path<KeyNamePath>,
+    State(state): State<AppState>,
+    AuthenticatedKeyExt(mut auth_key): AuthenticatedKeyExt,
+    ApiJson(body): ApiJson<DbQueryRequest>,
+) -> Response {
+    if let Some(r) = check_scope(&state, auth_key.as_deref(), &key_name, |ops| {
+        ops.allows_db_query()
+    }) {
+        return r;
+    }
+    auth_key.zeroize();
+
+    let key = match state.config.get_key(&key_name, body.ciphertext.key_version) {
+        Some(k) => k,
+        None => {
+            return ApiError(anyhow::anyhow!(
+                "key not found: {} (version {})",
+                key_name,
+                body.ciphertext.key_version
+            ))
+            .into_response();
+        }
+    };
+    let plaintext = match body.ciphertext.decrypt(key) {
+        Ok(value) => value,
+        Err(error) => return ApiError(error).into_response(),
+    };
+    let mut connection_string = match std::str::from_utf8(plaintext.borrow().as_ref()) {
+        Ok(value) => value.to_string(),
+        Err(error) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": format!("decrypted plaintext is not valid UTF-8: {}", error) })),
+            )
+                .into_response();
+        }
+    };
+
+    let targets = match db_query::parse_connection_targets(&connection_string) {
+        Ok(value) => value,
+        Err(error) => {
+            db_query::sanitize_connection_string(&mut connection_string);
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": format!("invalid database connection string: {}", error) })),
+            )
+                .into_response();
+        }
+    };
+    for (host, port) in &targets {
+        if !state.config.db_destination_allowed(&key_name, host, *port) {
+            db_query::sanitize_connection_string(&mut connection_string);
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "database destination is not allowed for this key set" })),
+            )
+                .into_response();
+        }
+    }
+
+    let connection_hash = db_query::connection_string_hash(&connection_string);
+    let pool = match state
+        .db_pool_cache
+        .get_or_create_pool(&connection_hash, &connection_string)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            db_query::sanitize_connection_string(&mut connection_string);
+            return ApiError(error).into_response();
+        }
+    };
+    db_query::sanitize_connection_string(&mut connection_string);
+
+    let timeout_ms = body
+        .options
+        .as_ref()
+        .and_then(|value| value.timeout_ms)
+        .unwrap_or(db_query::DEFAULT_TIMEOUT_MS)
+        .clamp(100, 60_000);
+    let max_rows = body
+        .options
+        .as_ref()
+        .and_then(|value| value.max_rows)
+        .unwrap_or(db_query::DEFAULT_MAX_ROWS)
+        .clamp(1, 10_000);
+    let params = body.query.params.unwrap_or_default();
+
+    match db_query::run_query(&pool, &body.query.sql, &params, timeout_ms, max_rows).await {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn proxy_substitute_handler(
     Path(KeyNamePath { key_name }): Path<KeyNamePath>,
     State(state): State<AppState>,
@@ -610,6 +735,7 @@ fn build_router(config: Config) -> Router {
     let state = AppState {
         config: Arc::new(config),
         http_client: reqwest::Client::new(),
+        db_pool_cache: db_query::DbPoolCache::new(Duration::from_secs(60), Duration::from_secs(5)),
     };
     Router::new()
         .route("/v1/{key_name}/encrypt", post(encrypt_handler))
@@ -627,6 +753,7 @@ fn build_router(config: Config) -> Router {
             "/v1/{key_name}/proxy-substitute",
             post(proxy_substitute_handler),
         )
+        .route("/v1/{key_name}/db-query", post(db_query_handler))
         .route("/v1/{key_name}/version", get(version_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -860,6 +987,34 @@ mod tests {
             "server_port": 8080,
             "keys": {
                 "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// Config with one API key allowed only for db_query operation.
+    fn config_with_operations_db_query_only() -> Config {
+        let json = r#"{
+            "api_keys": [{ "value": "db-query-only-key", "keys": "all", "operations": ["db_query"] }],
+            "server_port": 8080,
+            "keys": {
+                "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn config_with_db_destinations_for_vault() -> Config {
+        let json = r#"{
+            "api_keys": [{ "value": "db-query-key", "keys": "all", "operations": ["db_query", "encrypt"] }],
+            "server_port": 8080,
+            "keys": {
+                "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            },
+            "db_destinations": {
+                "vault": [
+                    { "host": "db-allowed.internal", "port": 5432 }
+                ]
             }
         }"#;
         serde_json::from_str(json).unwrap()
@@ -1139,6 +1294,35 @@ mod tests {
                 json!({
                     "ciphertext": ciphertext,
                     "request": { "method": "GET", "url": "https://api.stripe.com/v1/charges" }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn scope_operations_forbids_db_query_when_not_in_list() {
+        let app = build_router(config_with_operations_encrypt_decrypt_only());
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(r#"{"plaintext":"postgres://u:p@db.internal:5432/app"}"#))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "encrypt-decrypt-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": { "sql": "select 1" }
                 })
                 .to_string(),
             ))
@@ -1673,6 +1857,405 @@ mod tests {
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn db_query_rejects_disallowed_destination() {
+        let app = build_router(config_with_db_destinations_for_vault());
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(r#"{"plaintext":"postgres://user:pass@db-blocked.internal:5432/app"}"#))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": { "sql": "select 1" }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn db_query_allows_when_destination_policy_missing_for_key_name() {
+        let app = build_router(config_with_operations_db_query_only());
+        let encrypt_app = build_router(config_no_auth());
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"plaintext":"postgres://user:pass@db.internal:5432/app"}"#))
+            .unwrap();
+        let encrypt_resp = encrypt_app.oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-only-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": { "sql": "select 1" },
+                    "options": { "timeout_ms": 200 }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn db_query_executes_against_real_postgres_when_enabled() {
+        if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
+            return;
+        }
+        let connection_string = std::env::var("SIMPLEVAULT_TEST_DB_URL").unwrap_or_else(|_| {
+            "postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test".to_string()
+        });
+        let targets = crate::db_query::parse_connection_targets(&connection_string).unwrap();
+        let (allowed_host, allowed_port) = targets.first().cloned().unwrap();
+        let config_json = format!(
+            r#"{{
+            "api_keys": [{{ "value": "db-query-key", "keys": "all", "operations": ["encrypt", "db_query"] }}],
+            "server_port": 8080,
+            "keys": {{
+                "vault": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "db_destinations": {{
+                "vault": [{{ "host": "{}", "port": {} }}]
+            }}
+        }}"#,
+            allowed_host, allowed_port
+        );
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let app = build_router(config);
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({ "plaintext": connection_string }).to_string(),
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let encrypt_body = read_body(encrypt_resp).await;
+        let encrypt_json: serde_json::Value = serde_json::from_slice(&encrypt_body).unwrap();
+        let ciphertext = encrypt_json["ciphertext"].as_str().unwrap().to_string();
+
+        let query_req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": {
+                        "sql": "select $1::int as n, $2::text as t",
+                        "params": [7, "ok"]
+                    },
+                    "options": {
+                        "timeout_ms": 3000,
+                        "max_rows": 100
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let query_resp = app.oneshot(query_req).await.unwrap();
+        let query_status = query_resp.status();
+        let query_body = read_body(query_resp).await;
+        assert_eq!(
+            query_status,
+            StatusCode::OK,
+            "db-query should succeed against test postgres; body={}",
+            String::from_utf8_lossy(&query_body)
+        );
+        let query_json: serde_json::Value = serde_json::from_slice(&query_body).unwrap();
+        assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
+        assert_eq!(query_json["rows"][0][0].as_i64().unwrap(), 7);
+        assert_eq!(query_json["rows"][0][1].as_str().unwrap(), "ok");
+    }
+
+    #[tokio::test]
+    async fn db_query_reports_descriptive_sql_errors_when_enabled() {
+        if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
+            return;
+        }
+        let connection_string = std::env::var("SIMPLEVAULT_TEST_DB_URL").unwrap_or_else(|_| {
+            "postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test".to_string()
+        });
+        let targets = crate::db_query::parse_connection_targets(&connection_string).unwrap();
+        let (allowed_host, allowed_port) = targets.first().cloned().unwrap();
+        let config_json = format!(
+            r#"{{
+            "api_keys": [{{ "value": "db-query-key", "keys": "all", "operations": ["encrypt", "db_query"] }}],
+            "server_port": 8080,
+            "keys": {{
+                "vault": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "db_destinations": {{
+                "vault": [{{ "host": "{}", "port": {} }}]
+            }}
+        }}"#,
+            allowed_host, allowed_port
+        );
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let app = build_router(config);
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({ "plaintext": connection_string }).to_string(),
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let encrypt_body = read_body(encrypt_resp).await;
+        let encrypt_json: serde_json::Value = serde_json::from_slice(&encrypt_body).unwrap();
+        let ciphertext = encrypt_json["ciphertext"].as_str().unwrap().to_string();
+
+        let query_req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": {
+                        "sql": "select missing_column from (select 1 as n) t"
+                    },
+                    "options": {
+                        "timeout_ms": 3000,
+                        "max_rows": 100
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let query_resp = app.oneshot(query_req).await.unwrap();
+        assert_eq!(query_resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let query_body = read_body(query_resp).await;
+        let query_json: serde_json::Value = serde_json::from_slice(&query_body).unwrap();
+        let error_message = query_json["error"].as_str().unwrap_or_default();
+        assert!(
+            error_message.contains("database error ["),
+            "expected SQLSTATE/code in error message, got: {}",
+            error_message
+        );
+        assert!(
+            error_message.to_ascii_lowercase().contains("missing_column")
+                || error_message.to_ascii_lowercase().contains("column"),
+            "expected column context in error message, got: {}",
+            error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn db_query_supports_typed_jsonb_params_when_enabled() {
+        if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
+            return;
+        }
+        let connection_string = std::env::var("SIMPLEVAULT_TEST_DB_URL").unwrap_or_else(|_| {
+            "postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test".to_string()
+        });
+        let targets = crate::db_query::parse_connection_targets(&connection_string).unwrap();
+        let (allowed_host, allowed_port) = targets.first().cloned().unwrap();
+        let config_json = format!(
+            r#"{{
+            "api_keys": [{{ "value": "db-query-key", "keys": "all", "operations": ["encrypt", "db_query"] }}],
+            "server_port": 8080,
+            "keys": {{
+                "vault": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "db_destinations": {{
+                "vault": [{{ "host": "{}", "port": {} }}]
+            }}
+        }}"#,
+            allowed_host, allowed_port
+        );
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let app = build_router(config);
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({ "plaintext": connection_string }).to_string(),
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let encrypt_body = read_body(encrypt_resp).await;
+        let encrypt_json: serde_json::Value = serde_json::from_slice(&encrypt_body).unwrap();
+        let ciphertext = encrypt_json["ciphertext"].as_str().unwrap().to_string();
+
+        let query_req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": {
+                        "sql": "select $1::jsonb->>'kind' as kind, $2::varchar as label",
+                        "params": [
+                            { "param_type": "jsonb", "value": { "kind": "customer" } },
+                            { "param_type": "varchar", "value": "gold" }
+                        ]
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let query_resp = app.oneshot(query_req).await.unwrap();
+        assert_eq!(query_resp.status(), StatusCode::OK);
+        let query_body = read_body(query_resp).await;
+        let query_json: serde_json::Value = serde_json::from_slice(&query_body).unwrap();
+        assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
+        assert_eq!(query_json["rows"][0][0].as_str().unwrap(), "customer");
+        assert_eq!(query_json["rows"][0][1].as_str().unwrap(), "gold");
+    }
+
+    #[tokio::test]
+    async fn db_query_supports_untyped_json_object_and_array_params_when_enabled() {
+        if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
+            return;
+        }
+        let connection_string = std::env::var("SIMPLEVAULT_TEST_DB_URL").unwrap_or_else(|_| {
+            "postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test".to_string()
+        });
+        let targets = crate::db_query::parse_connection_targets(&connection_string).unwrap();
+        let (allowed_host, allowed_port) = targets.first().cloned().unwrap();
+        let config_json = format!(
+            r#"{{
+            "api_keys": [{{ "value": "db-query-key", "keys": "all", "operations": ["encrypt", "db_query"] }}],
+            "server_port": 8080,
+            "keys": {{
+                "vault": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "db_destinations": {{
+                "vault": [{{ "host": "{}", "port": {} }}]
+            }}
+        }}"#,
+            allowed_host, allowed_port
+        );
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let app = build_router(config);
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({ "plaintext": connection_string }).to_string(),
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let encrypt_body = read_body(encrypt_resp).await;
+        let encrypt_json: serde_json::Value = serde_json::from_slice(&encrypt_body).unwrap();
+        let ciphertext = encrypt_json["ciphertext"].as_str().unwrap().to_string();
+
+        let query_req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": {
+                        "sql": "select $1::jsonb->>'kind' as kind, jsonb_array_length($2::jsonb) as n",
+                        "params": [
+                            { "kind": "customer" },
+                            [1, 2, 3]
+                        ]
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let query_resp = app.oneshot(query_req).await.unwrap();
+        assert_eq!(query_resp.status(), StatusCode::OK);
+        let query_body = read_body(query_resp).await;
+        let query_json: serde_json::Value = serde_json::from_slice(&query_body).unwrap();
+        assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
+        assert_eq!(query_json["rows"][0][0].as_str().unwrap(), "customer");
+        assert_eq!(query_json["rows"][0][1].as_i64().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn db_query_preserves_select_column_order_when_enabled() {
+        if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
+            return;
+        }
+        let connection_string = std::env::var("SIMPLEVAULT_TEST_DB_URL").unwrap_or_else(|_| {
+            "postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test".to_string()
+        });
+        let targets = crate::db_query::parse_connection_targets(&connection_string).unwrap();
+        let (allowed_host, allowed_port) = targets.first().cloned().unwrap();
+        let config_json = format!(
+            r#"{{
+            "api_keys": [{{ "value": "db-query-key", "keys": "all", "operations": ["encrypt", "db_query"] }}],
+            "server_port": 8080,
+            "keys": {{
+                "vault": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "db_destinations": {{
+                "vault": [{{ "host": "{}", "port": {} }}]
+            }}
+        }}"#,
+            allowed_host, allowed_port
+        );
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let app = build_router(config);
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({ "plaintext": connection_string }).to_string(),
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let encrypt_body = read_body(encrypt_resp).await;
+        let encrypt_json: serde_json::Value = serde_json::from_slice(&encrypt_body).unwrap();
+        let ciphertext = encrypt_json["ciphertext"].as_str().unwrap().to_string();
+
+        let query_req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": {
+                        "sql": "select 1 as z, 2 as a, 3 as m"
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let query_resp = app.oneshot(query_req).await.unwrap();
+        assert_eq!(query_resp.status(), StatusCode::OK);
+        let query_body = read_body(query_resp).await;
+        let query_json: serde_json::Value = serde_json::from_slice(&query_body).unwrap();
+        assert_eq!(query_json["columns"][0]["name"].as_str().unwrap(), "z");
+        assert_eq!(query_json["columns"][1]["name"].as_str().unwrap(), "a");
+        assert_eq!(query_json["columns"][2]["name"].as_str().unwrap(), "m");
+        assert_eq!(query_json["rows"][0][0].as_i64().unwrap(), 1);
+        assert_eq!(query_json["rows"][0][1].as_i64().unwrap(), 2);
+        assert_eq!(query_json["rows"][0][2].as_i64().unwrap(), 3);
     }
 
     // --- Routing tests ---

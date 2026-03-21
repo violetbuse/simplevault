@@ -8,9 +8,10 @@ export interface DevConfig {
   server_port: number;
   keys: Record<string, Record<string, string>>;
   outbound_destinations?: Record<string, OutboundDestinationRule[]>;
+  db_destinations?: Record<string, DbDestinationRule[]>;
 }
 
-export type ApiKeyOperation = 'encrypt' | 'decrypt' | 'rotate' | 'verify' | 'sign' | 'proxy';
+export type ApiKeyOperation = 'encrypt' | 'decrypt' | 'rotate' | 'verify' | 'sign' | 'proxy' | 'db_query';
 
 export interface ApiKeyConfigObject {
   value: string;
@@ -26,6 +27,11 @@ export interface OutboundDestinationRule {
   methods?: string[];
 }
 
+export interface DbDestinationRule {
+  host: string;
+  port?: number;
+}
+
 const DEFAULT_KEY =
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
@@ -38,6 +44,7 @@ export const DEFAULT_DEV_CONFIG: DevConfig = {
     },
   },
   outbound_destinations: {},
+  db_destinations: {},
 };
 
 /** Default config file path used by init and as default for dev. */
@@ -66,6 +73,9 @@ export function loadConfig(configPath?: string): DevConfig {
     }
     if (!parsed.outbound_destinations || typeof parsed.outbound_destinations !== 'object') {
       parsed.outbound_destinations = {};
+    }
+    if (!parsed.db_destinations || typeof parsed.db_destinations !== 'object') {
+      parsed.db_destinations = {};
     }
     return parsed;
   } catch (err) {

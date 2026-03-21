@@ -4,9 +4,11 @@
 #   1. Rust unit/integration tests (cargo test)
 #   2. Client API contract tests against dev server (Node/tsx)
 #   3. Client API contract tests against production server (Rust binary)
+#   4. DB-enabled query tests (Rust + contract parity via docker compose)
 #
-# Usage: ./run-all-tests.sh [--no-build]
+# Usage: ./run-all-tests.sh [--no-build] [--no-db-tests]
 #   --no-build  Skip building the Rust release binary (contract:rust will fail if not built)
+#   --no-db-tests  Skip DB-enabled test suite (run-db-query-tests.sh)
 #
 
 set -e
@@ -20,9 +22,11 @@ echo "=========================================="
 ./check-version.sh
 
 NO_BUILD=false
+NO_DB_TESTS=false
 for arg in "$@"; do
   case "$arg" in
     --no-build) NO_BUILD=true ;;
+    --no-db-tests) NO_DB_TESTS=true ;;
   esac
 done
 
@@ -51,6 +55,14 @@ fi
 cd client
 node test/run-with-rust-server.mjs
 cd ..
+
+if [ "$NO_DB_TESTS" = false ]; then
+  echo ""
+  echo "=========================================="
+  echo "4. DB-enabled tests"
+  echo "=========================================="
+  ./run-db-query-tests.sh
+fi
 
 echo ""
 echo "=========================================="

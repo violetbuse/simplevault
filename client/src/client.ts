@@ -39,6 +39,56 @@ export interface ProxySubstituteResponse {
   body: string;
 }
 
+export interface DbQueryRequest {
+  ciphertext: string;
+  query: {
+    sql: string;
+    params?: Array<
+      | string
+      | number
+      | boolean
+      | null
+      | Record<string, unknown>
+      | unknown[]
+      | {
+          param_type:
+            | 'null'
+            | 'bool'
+            | 'boolean'
+            | 'int'
+            | 'int4'
+            | 'integer'
+            | 'i32'
+            | 'bigint'
+            | 'int8'
+            | 'i64'
+            | 'float'
+            | 'float8'
+            | 'double'
+            | 'f64'
+            | 'text'
+            | 'varchar'
+            | 'string'
+            | 'json'
+            | 'jsonb';
+          value?: unknown;
+        }
+    >;
+  };
+  options?: {
+    timeout_ms?: number;
+    max_rows?: number;
+  };
+}
+
+export interface DbQueryResponse {
+  columns: Array<{ name: string; db_type?: string }>;
+  rows: unknown[][];
+  row_count: number;
+  truncated: boolean;
+  timing_ms: number;
+}
+
 export class SimpleVaultClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -158,5 +208,15 @@ export class SimpleVaultClient {
     params: ProxySubstituteRequest
   ): Promise<ProxySubstituteResponse> {
     return this.request('POST', `/v1/${encodeURIComponent(keyName)}/proxy-substitute`, params);
+  }
+
+  /**
+   * Decrypts a ciphertext DB connection string server-side and executes a query.
+   */
+  async dbQuery(
+    keyName: string,
+    params: DbQueryRequest
+  ): Promise<DbQueryResponse> {
+    return this.request('POST', `/v1/${encodeURIComponent(keyName)}/db-query`, params);
   }
 }

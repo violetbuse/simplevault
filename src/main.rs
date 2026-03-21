@@ -1,6 +1,7 @@
 mod api;
 mod config;
 mod crypto;
+mod db_query;
 mod proxy_substitute;
 
 use std::path::PathBuf;

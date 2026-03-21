@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -85,10 +86,28 @@ function runTests(baseUrl) {
   });
 }
 
+function createRuntimeConfigPath() {
+  const baseConfigPath = join(__dirname, 'config.json');
+  const runtimeConfigPath = join(__dirname, `config.runtime.${process.pid}.json`);
+  const parsed = JSON.parse(readFileSync(baseConfigPath, 'utf8'));
+  const testDbUrl = process.env.SIMPLEVAULT_TEST_DB_URL;
+  if (testDbUrl) {
+    const url = new URL(testDbUrl);
+    const host = url.hostname;
+    const port = url.port ? Number.parseInt(url.port, 10) : 5432;
+    if (!parsed.db_destinations) {
+      parsed.db_destinations = {};
+    }
+    parsed.db_destinations.vault = [{ host, port }];
+  }
+  writeFileSync(runtimeConfigPath, JSON.stringify(parsed, null, 2), 'utf8');
+  return runtimeConfigPath;
+}
+
 async function main() {
   const port = await findFreePort();
   const baseUrl = `http://localhost:${port}`;
-  const configPath = join(__dirname, 'config.json');
+  const configPath = createRuntimeConfigPath();
   const server = spawn(
     'npx',
     ['tsx', 'src/cli.ts', '-c', configPath, '-p', String(port)],
@@ -110,6 +129,11 @@ async function main() {
     exitCode = await runTests(baseUrl);
   } finally {
     await killAndWait(server, 5000);
+    try {
+      unlinkSync(configPath);
+    } catch {
+      // ignore cleanup errors
+    }
   }
 
   process.exit(exitCode);

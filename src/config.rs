@@ -28,6 +28,8 @@ pub struct Config {
     keys: KeySet,
     #[serde(default)]
     outbound_destinations: HashMap<String, Vec<OutboundDestinationRule>>,
+    #[serde(default)]
+    db_destinations: HashMap<String, Vec<DbDestinationRule>>,
 }
 
 impl Config {
@@ -68,6 +70,14 @@ impl Config {
             None => return true,
         };
         rules.iter().any(|rule| rule.matches(method, host, path))
+    }
+
+    pub fn db_destination_allowed(&self, key_name: &str, host: &str, port: u16) -> bool {
+        let rules = match self.db_destinations.get(key_name) {
+            Some(value) => value,
+            None => return true,
+        };
+        rules.iter().any(|rule| rule.matches(host, port))
     }
 
     #[cfg(test)]
@@ -141,6 +151,8 @@ pub enum ApiKeyOperation {
     Verify,
     Sign,
     Proxy,
+    #[serde(rename = "db_query")]
+    DbQuery,
 }
 
 /// Scope for which operations this API key can perform: "all" or a list of operations.
@@ -193,6 +205,13 @@ impl OperationsScope {
             OperationsScope::List(ops) => ops.iter().any(|o| matches!(o, ApiKeyOperation::Proxy)),
         }
     }
+
+    pub fn allows_db_query(&self) -> bool {
+        match self {
+            OperationsScope::All => true,
+            OperationsScope::List(ops) => ops.iter().any(|o| matches!(o, ApiKeyOperation::DbQuery)),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -209,7 +228,7 @@ impl OperationsScopeInput {
                 if s == "all" {
                     Ok(OperationsScope::All)
                 } else {
-                    Err("operations must be the string \"all\" or an array of \"encrypt\", \"decrypt\", \"rotate\", \"verify\", \"sign\", \"proxy\"".to_string())
+                    Err("operations must be the string \"all\" or an array of \"encrypt\", \"decrypt\", \"rotate\", \"verify\", \"sign\", \"proxy\", \"db_query\"".to_string())
                 }
             }
             OperationsScopeInput::List(l) => Ok(OperationsScope::List(l)),
@@ -249,6 +268,25 @@ impl OutboundDestinationRule {
             }
         }
         true
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DbDestinationRule {
+    pub host: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+}
+
+impl DbDestinationRule {
+    fn matches(&self, host: &str, port: u16) -> bool {
+        if self.host.trim().to_ascii_lowercase() != host.trim().to_ascii_lowercase() {
+            return false;
+        }
+        match self.port {
+            Some(expected_port) => expected_port == port,
+            None => true,
+        }
     }
 }
 
@@ -449,6 +487,7 @@ mod tests {
         assert!(key.operations_scope().allows_verify());
         assert!(key.operations_scope().allows_sign());
         assert!(key.operations_scope().allows_proxy());
+        assert!(key.operations_scope().allows_db_query());
     }
 
     #[test]
@@ -464,6 +503,7 @@ mod tests {
         assert!(key.operations_scope().allows_verify());
         assert!(key.operations_scope().allows_sign());
         assert!(key.operations_scope().allows_proxy());
+        assert!(key.operations_scope().allows_db_query());
     }
 
     #[test]
@@ -480,6 +520,7 @@ mod tests {
         assert!(key.operations_scope().allows_verify());
         assert!(key.operations_scope().allows_sign());
         assert!(key.operations_scope().allows_proxy());
+        assert!(key.operations_scope().allows_db_query());
     }
 
     #[test]
@@ -503,6 +544,7 @@ mod tests {
         assert!(!ops.allows_verify());
         assert!(!ops.allows_sign());
         assert!(!ops.allows_proxy());
+        assert!(!ops.allows_db_query());
     }
 
     #[test]
@@ -520,6 +562,7 @@ mod tests {
         assert!(string_key.operations_scope().allows_verify());
         assert!(string_key.operations_scope().allows_sign());
         assert!(string_key.operations_scope().allows_proxy());
+        assert!(string_key.operations_scope().allows_db_query());
 
         let object_key = &config.api_keys()[1];
         assert!(object_key.operations_scope().allows_encrypt());
@@ -528,6 +571,7 @@ mod tests {
         assert!(!object_key.operations_scope().allows_verify());
         assert!(!object_key.operations_scope().allows_sign());
         assert!(!object_key.operations_scope().allows_proxy());
+        assert!(!object_key.operations_scope().allows_db_query());
     }
 
     #[test]
@@ -570,15 +614,16 @@ mod tests {
         assert!(scope.allows_verify());
         assert!(scope.allows_sign());
         assert!(scope.allows_proxy());
+        assert!(scope.allows_db_query());
     }
 
     #[test]
     fn operations_scope_deserialize_list() {
         let scope: OperationsScope =
-            serde_json::from_str(r#"["encrypt", "decrypt", "rotate", "verify", "sign", "proxy"]"#)
+            serde_json::from_str(r#"["encrypt", "decrypt", "rotate", "verify", "sign", "proxy", "db_query"]"#)
                 .unwrap();
         match &scope {
-            OperationsScope::List(ops) => assert_eq!(ops.len(), 6),
+            OperationsScope::List(ops) => assert_eq!(ops.len(), 7),
             OperationsScope::All => panic!("expected List"),
         }
         assert!(scope.allows_encrypt());
@@ -587,6 +632,7 @@ mod tests {
         assert!(scope.allows_verify());
         assert!(scope.allows_sign());
         assert!(scope.allows_proxy());
+        assert!(scope.allows_db_query());
     }
 
     #[test]
@@ -598,6 +644,7 @@ mod tests {
         assert!(!scope.allows_verify());
         assert!(!scope.allows_sign());
         assert!(!scope.allows_proxy());
+        assert!(!scope.allows_db_query());
     }
 
     #[test]
@@ -644,5 +691,50 @@ mod tests {
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
         assert!(config.destination_allowed("vault", "GET", "example.com", "/"));
+    }
+
+    #[test]
+    fn db_destination_policy_defaults_to_allow_when_missing() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.db_destination_allowed("vault", "db.internal", 5432));
+    }
+
+    #[test]
+    fn db_destination_policy_matches_host_and_optional_port() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "db_destinations": {
+                "vault": [
+                    { "host": "db.internal", "port": 5432 },
+                    { "host": "db-read.internal" }
+                ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.db_destination_allowed("vault", "db.internal", 5432));
+        assert!(!config.db_destination_allowed("vault", "db.internal", 5433));
+        assert!(config.db_destination_allowed("vault", "db-read.internal", 6000));
+        assert!(!config.db_destination_allowed("vault", "unknown.internal", 5432));
+    }
+
+    #[test]
+    fn db_destination_policy_empty_list_denies_all() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "db_destinations": {
+                "vault": []
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.db_destination_allowed("vault", "db.internal", 5432));
     }
 }

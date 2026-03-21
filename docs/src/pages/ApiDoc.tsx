@@ -158,6 +158,56 @@ export default function ApiDoc() {
 
           <div className="border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--surface-elevated)]">
             <div className="px-5 py-3 border-b border-[var(--border)] flex items-center gap-3">
+              <span className="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-green-500/20 text-green-400">POST</span>
+              <code className="font-mono text-sm">/v1/{`{key_name}`}/db-query</code>
+            </div>
+            <div className="p-5">
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                Decrypt ciphertext internally to a Postgres connection string, reuse a connection pool keyed by the SHA-256 hash of that string, run a query, and return tabular JSON results.
+              </p>
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                Pool entries are evicted after 60 seconds of inactivity. If <code className="bg-black/30 px-1 rounded">db_destinations</code> is configured for the key set, the host/port must match the allowlist.
+              </p>
+              <p className="text-sm font-medium mb-2">Request body:</p>
+              <pre className="bg-black/30 rounded p-4 text-sm font-mono mb-4">{`{
+  "ciphertext": "v1:...",
+  "query": {
+    "sql": "select id, email from users where id = $1",
+    "params": [123]
+  },
+  "options": {
+    "timeout_ms": 5000,
+    "max_rows": 500
+  }
+}`}</pre>
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                Params support primitive values (<code className="bg-black/30 px-1 rounded">null</code>, <code className="bg-black/30 px-1 rounded">boolean</code>, <code className="bg-black/30 px-1 rounded">number</code>, <code className="bg-black/30 px-1 rounded">string</code>) and typed objects for explicit binding:
+              </p>
+              <pre className="bg-black/30 rounded p-4 text-sm font-mono mb-4">{`{
+  "query": {
+    "sql": "select $1::jsonb->>'kind' as kind, $2::varchar as label",
+    "params": [
+      { "param_type": "jsonb", "value": { "kind": "customer" } },
+      { "param_type": "varchar", "value": "gold" }
+    ]
+  }
+}`}</pre>
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                Plain JSON objects/arrays are also accepted as JSON params (for example <code className="bg-black/30 px-1 rounded">{`{"kind":"customer"}`}</code> or <code className="bg-black/30 px-1 rounded">[1,2,3]</code>). Only objects that exactly match <code className="bg-black/30 px-1 rounded">{`{"param_type":"...","value":...}`}</code> use typed binding mode.
+              </p>
+              <p className="text-sm font-medium mb-2">Response:</p>
+              <pre className="bg-black/30 rounded p-4 text-sm font-mono">{`{
+  "columns": [{ "name": "id" }, { "name": "email" }],
+  "rows": [[123, "a@example.com"]],
+  "row_count": 1,
+  "truncated": false,
+  "timing_ms": 18
+}`}</pre>
+            </div>
+          </div>
+
+          <div className="border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--surface-elevated)]">
+            <div className="px-5 py-3 border-b border-[var(--border)] flex items-center gap-3">
               <span className="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-blue-500/20 text-blue-400">GET</span>
               <code className="font-mono text-sm">/v1/{`{key_name}`}/version</code>
             </div>
@@ -182,7 +232,7 @@ export default function ApiDoc() {
           <li><code className="bg-black/30 px-1 rounded">403</code> — API key does not have scope for the key name or operation</li>
           <li><code className="bg-black/30 px-1 rounded">404</code> — Unknown route</li>
           <li><code className="bg-black/30 px-1 rounded">405</code> — Wrong HTTP method</li>
-          <li><code className="bg-black/30 px-1 rounded">422</code> — Invalid request body (e.g. missing plaintext, malformed ciphertext, non-hex payload, invalid outbound URL)</li>
+          <li><code className="bg-black/30 px-1 rounded">422</code> — Invalid request body (e.g. missing plaintext, malformed ciphertext, non-hex payload, invalid outbound URL, invalid DB query/DSN)</li>
           <li><code className="bg-black/30 px-1 rounded">500</code> — Server error (e.g. key not found, decryption failed)</li>
           <li><code className="bg-black/30 px-1 rounded">502</code> — Upstream request failed for proxy-substitute</li>
         </ul>

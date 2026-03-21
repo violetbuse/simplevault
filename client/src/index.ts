@@ -22,6 +22,8 @@ export type {
   CreateSignatureParams,
   ProxySubstituteRequest,
   ProxySubstituteResponse,
+  DbQueryRequest,
+  DbQueryResponse,
   SimpleVaultClientOptions,
   VerifySignatureParams,
 } from './client.js';
