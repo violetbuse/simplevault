@@ -8,7 +8,7 @@ use std::{
 use base64::Engine;
 
 use rand::Rng;
-use secrets::SecretVec;
+use secrecy::{ExposeSecret, SecretSlice};
 use serde::{
     Deserialize,
     de::{Deserializer, Error as SerdeError},
@@ -85,11 +85,6 @@ impl Config {
         &self.api_keys
     }
 }
-
-// Config is used as axum state with a single-threaded runtime.
-// The secret types inside are not thread-safe; current_thread ensures we never share across threads.
-unsafe impl Send for Config {}
-unsafe impl Sync for Config {}
 
 /// Scope for which key names this API key can access: "all" or a list of key names.
 #[derive(Clone, Debug, Default)]
@@ -302,16 +297,16 @@ impl<'de> Deserialize<'de> for OperationsScope {
 }
 
 pub struct ApiKey {
-    value: SecretVec<u8>,
+    value: SecretSlice<u8>,
     keys: KeysScope,
     operations: OperationsScope,
 }
 
 impl ApiKey {
     pub fn matches<T: AsRef<str>>(&self, other: T) -> bool {
-        let key_bytes = self.value.borrow();
+        let key_bytes = self.value.expose_secret();
         let other_bytes = other.as_ref().as_bytes();
-        &*key_bytes == other_bytes
+        key_bytes == other_bytes
     }
 
     pub fn keys_scope(&self) -> &KeysScope {
@@ -355,7 +350,7 @@ impl<'de> Deserialize<'de> for ApiKey {
         let input = ApiKeyInput::deserialize(deserializer)?;
         Ok(match input {
             ApiKeyInput::Legacy(s) => ApiKey {
-                value: SecretVec::new(s.len(), |buf| buf.copy_from_slice(s.as_bytes())),
+                value: SecretSlice::from(s.as_bytes().to_vec()),
                 keys: KeysScope::All,
                 operations: OperationsScope::All,
             },
@@ -364,7 +359,7 @@ impl<'de> Deserialize<'de> for ApiKey {
                 keys,
                 operations,
             } => ApiKey {
-                value: SecretVec::new(value.len(), |buf| buf.copy_from_slice(value.as_bytes())),
+                value: SecretSlice::from(value.as_bytes().to_vec()),
                 keys,
                 operations,
             },

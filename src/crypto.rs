@@ -5,7 +5,7 @@ use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit},
 };
 use hmac::{Hmac, Mac};
-use secrets::{SecretBox, SecretVec};
+use secrecy::{ExposeSecret, SecretBox, SecretSlice};
 use serde::de::{Deserializer, Error as SerdeError, Visitor};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
@@ -13,7 +13,6 @@ use sha2::{Sha256, Sha512};
 
 // AES-GCM-256 encryption key
 pub struct EncryptionKey {
-    // key: [u8; 32],
     key: SecretBox<[u8; 32]>,
 }
 
@@ -66,7 +65,7 @@ impl<'de> serde::Deserialize<'de> for EncryptionKey {
                 key.copy_from_slice(&bytes);
 
                 Ok(EncryptionKey {
-                    key: SecretBox::new(|s| *s = key),
+                    key: SecretBox::new(Box::new(key)),
                 })
             }
         }
@@ -82,43 +81,40 @@ pub struct CipherText {
     pub key_version: u32,
     // 96 bit nonce
     nonce: SecretBox<[u8; 12]>,
-    ciphertext: SecretVec<u8>,
+    ciphertext: SecretSlice<u8>,
 }
 
 impl CipherText {
-    pub fn decrypt(&self, key: &EncryptionKey) -> Result<SecretVec<u8>, anyhow::Error> {
-        let cipher = Aes256Gcm::new_from_slice(key.key.borrow().as_slice())
+    pub fn decrypt(&self, key: &EncryptionKey) -> Result<SecretSlice<u8>, anyhow::Error> {
+        let cipher = Aes256Gcm::new_from_slice(key.key.expose_secret().as_slice())
             .map_err(|e| anyhow::anyhow!("invalid key: {}", e))?;
-        let nonce_bytes = *self.nonce.borrow();
+        let nonce_bytes = *self.nonce.expose_secret();
         let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
         let plaintext = cipher
-            .decrypt(nonce, self.ciphertext.borrow().as_ref())
+            .decrypt(nonce, self.ciphertext.expose_secret())
             .map_err(|e| anyhow::anyhow!("decryption failed: {}", e))?;
-        Ok(SecretVec::new(plaintext.len(), |buf| {
-            buf.copy_from_slice(&plaintext);
-        }))
+        Ok(SecretSlice::from(plaintext))
     }
 
     pub fn encrypt(
-        plaintext: SecretVec<u8>,
+        plaintext: SecretSlice<u8>,
         key: &EncryptionKey,
         key_version: u32,
     ) -> Result<CipherText, anyhow::Error> {
-        let cipher = Aes256Gcm::new_from_slice(key.key.borrow().as_slice())
+        let cipher = Aes256Gcm::new_from_slice(key.key.expose_secret().as_slice())
             .map_err(|e| anyhow::anyhow!("invalid key: {}", e))?;
         let nonce = Aes256Gcm::generate_nonce(&mut rand_core::OsRng);
         let ciphertext = cipher
-            .encrypt(&nonce, plaintext.borrow().as_ref())
+            .encrypt(&nonce, plaintext.expose_secret())
             .map_err(|e| anyhow::anyhow!("encryption failed: {}", e))?;
         let nonce_arr: [u8; 12] = nonce
             .as_slice()
             .try_into()
             .map_err(|_| anyhow::anyhow!("nonce length mismatch"))?;
-        let ct_len = ciphertext.len();
-        let ciphertext_secret = SecretVec::new(ct_len, |buf| buf.copy_from_slice(&ciphertext));
+        let ciphertext_secret = SecretSlice::from(ciphertext);
         Ok(CipherText {
             key_version,
-            nonce: SecretBox::new(|s| *s = nonce_arr),
+            nonce: SecretBox::new(Box::new(nonce_arr)),
             ciphertext: ciphertext_secret,
         })
     }
@@ -247,13 +243,13 @@ pub fn verify_signature_with_encrypted_secret_bytes(
 
     match parsed_algorithm {
         SignatureAlgorithm::HmacSha1 => {
-            verify_hmac_sha1(secret.borrow().as_ref(), payload, signature)
+            verify_hmac_sha1(secret.expose_secret(), payload, signature)
         }
         SignatureAlgorithm::HmacSha256 => {
-            verify_hmac_sha256(secret.borrow().as_ref(), payload, signature)
+            verify_hmac_sha256(secret.expose_secret(), payload, signature)
         }
         SignatureAlgorithm::HmacSha512 => {
-            verify_hmac_sha512(secret.borrow().as_ref(), payload, signature)
+            verify_hmac_sha512(secret.expose_secret(), payload, signature)
         }
     }
 }
@@ -268,9 +264,9 @@ pub fn create_signature_with_encrypted_secret_bytes(
     let parsed_algorithm = SignatureAlgorithm::parse(algorithm)?;
 
     match parsed_algorithm {
-        SignatureAlgorithm::HmacSha1 => sign_hmac_sha1(secret.borrow().as_ref(), payload),
-        SignatureAlgorithm::HmacSha256 => sign_hmac_sha256(secret.borrow().as_ref(), payload),
-        SignatureAlgorithm::HmacSha512 => sign_hmac_sha512(secret.borrow().as_ref(), payload),
+        SignatureAlgorithm::HmacSha1 => sign_hmac_sha1(secret.expose_secret(), payload),
+        SignatureAlgorithm::HmacSha256 => sign_hmac_sha256(secret.expose_secret(), payload),
+        SignatureAlgorithm::HmacSha512 => sign_hmac_sha512(secret.expose_secret(), payload),
     }
 }
 
@@ -289,8 +285,8 @@ impl Serialize for CipherText {
     where
         S: serde::Serializer,
     {
-        let nonce_hex = hex::encode(*self.nonce.borrow());
-        let ct_hex = hex::encode(&*self.ciphertext.borrow());
+        let nonce_hex = hex::encode(self.nonce.expose_secret());
+        let ct_hex = hex::encode(self.ciphertext.expose_secret());
         let s = format!("v{}:{}:{}", self.key_version, ct_hex, nonce_hex);
         serializer.serialize_str(&s)
     }
@@ -347,12 +343,11 @@ impl<'de> Deserialize<'de> for CipherText {
                 let mut nonce_arr = [0u8; 12];
                 nonce_arr.copy_from_slice(&nonce_bytes);
 
-                let ct_len = ct_bytes.len();
-                let ciphertext = SecretVec::new(ct_len, |buf| buf.copy_from_slice(&ct_bytes));
+                let ciphertext = SecretSlice::from(ct_bytes);
 
                 Ok(CipherText {
                     key_version,
-                    nonce: SecretBox::new(|s| *s = nonce_arr),
+                    nonce: SecretBox::new(Box::new(nonce_arr)),
                     ciphertext,
                 })
             }
@@ -366,7 +361,6 @@ impl<'de> Deserialize<'de> for CipherText {
 mod tests {
     use super::*;
     use hmac::{Hmac, Mac};
-    use secrets::SecretVec;
     use sha2::Sha256;
 
     fn make_key_hex() -> &'static str {
@@ -378,9 +372,8 @@ mod tests {
         serde_json::from_str(&json).unwrap()
     }
 
-    fn make_plaintext(s: &str) -> SecretVec<u8> {
-        let bytes = s.as_bytes();
-        SecretVec::new(bytes.len(), |buf| buf.copy_from_slice(bytes))
+    fn make_plaintext(s: &str) -> SecretSlice<u8> {
+        SecretSlice::from(s.as_bytes().to_vec())
     }
 
     // --- EncryptionKey tests ---
@@ -389,7 +382,7 @@ mod tests {
     fn encryption_key_deserialize_valid_hex() {
         let json = format!(r#""{}""#, make_key_hex());
         let key: EncryptionKey = serde_json::from_str(&json).unwrap();
-        assert_eq!(key.key.borrow().as_slice().len(), 32);
+        assert_eq!(key.key.expose_secret().len(), 32);
     }
 
     #[test]
@@ -447,7 +440,7 @@ mod tests {
         let plaintext = make_plaintext("hello world");
         let ct = CipherText::encrypt(plaintext, &key, 1).unwrap();
         let decrypted = ct.decrypt(&key).unwrap();
-        assert_eq!(decrypted.borrow().as_ref(), b"hello world");
+        assert_eq!(decrypted.expose_secret(), b"hello world".as_slice());
     }
 
     #[test]
@@ -456,7 +449,7 @@ mod tests {
         let plaintext = make_plaintext("");
         let ct = CipherText::encrypt(plaintext, &key, 1).unwrap();
         let decrypted = ct.decrypt(&key).unwrap();
-        assert_eq!(decrypted.borrow().as_ref(), b"");
+        assert_eq!(decrypted.expose_secret(), b"".as_slice());
     }
 
     #[test]
@@ -466,17 +459,17 @@ mod tests {
         let plaintext = make_plaintext(&data);
         let ct = CipherText::encrypt(plaintext, &key, 1).unwrap();
         let decrypted = ct.decrypt(&key).unwrap();
-        assert_eq!(decrypted.borrow().as_ref(), data.as_bytes());
+        assert_eq!(decrypted.expose_secret(), data.as_bytes());
     }
 
     #[test]
     fn ciphertext_encrypt_decrypt_binary_data() {
         let key = make_encryption_key();
         let bytes: Vec<u8> = (0u8..=255).collect();
-        let plaintext = SecretVec::new(bytes.len(), |buf| buf.copy_from_slice(&bytes));
+        let plaintext = SecretSlice::from(bytes.clone());
         let ct = CipherText::encrypt(plaintext, &key, 1).unwrap();
         let decrypted = ct.decrypt(&key).unwrap();
-        assert_eq!(decrypted.borrow().as_ref(), bytes.as_slice());
+        assert_eq!(decrypted.expose_secret(), bytes.as_slice());
     }
 
     #[test]
@@ -568,7 +561,7 @@ mod tests {
         let ct2: CipherText = serde_json::from_str(&s).unwrap();
         assert_eq!(ct.key_version, ct2.key_version);
         let decrypted = ct2.decrypt(&key).unwrap();
-        assert_eq!(decrypted.borrow().as_ref(), b"roundtrip");
+        assert_eq!(decrypted.expose_secret(), b"roundtrip".as_slice());
     }
 
     #[test]
@@ -581,7 +574,7 @@ mod tests {
         assert_eq!(ct.key_version, restored.key_version);
         let orig_dec = ct.decrypt(&key).unwrap();
         let rest_dec = restored.decrypt(&key).unwrap();
-        assert_eq!(orig_dec.borrow().as_ref(), rest_dec.borrow().as_ref());
+        assert_eq!(orig_dec.expose_secret(), rest_dec.expose_secret());
     }
 
     #[test]

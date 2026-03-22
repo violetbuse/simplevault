@@ -17,8 +17,8 @@ The server is implemented in Rust in the `src/` directory:
 
 - **`main.rs`** — CLI (clap): config path or `--config-env`, `--port`, `--keep-config`, `--delete-env`. Loads config, then runs the HTTP server.
 - **`config.rs`** — Config struct (`api_keys`, `server_port`, versioned keys). Reads from file (with optional secure delete by overwriting then removing) or from a base64-encoded env var (with optional unset after read). API keys and keys stored in secret types; validation helpers for auth and key lookup.
-- **`api.rs`** — Axum router: encrypt, decrypt, rotate, version handlers; auth middleware (Bearer, `x-api-key`, query); JSON request/response with typed errors. Uses a single-threaded Tokio runtime.
-- **`crypto.rs`** — AES-256-GCM via `aes_gcm`. Encryption keys are 32-byte hex in config. Ciphertext format `v<version>:<hex_ciphertext>:<hex_nonce>`. Plaintext and keys held in `secrets::SecretVec` / `SecretBox`; debug impls redact sensitive data.
+- **`api.rs`** — Axum router: encrypt, decrypt, rotate, version handlers; auth middleware (Bearer, `x-api-key`, query); JSON request/response with typed errors. Uses Tokio’s multi-threaded runtime.
+- **`crypto.rs`** — AES-256-GCM via `aes_gcm`. Encryption keys are 32-byte hex in config. Ciphertext format `v<version>:<hex_ciphertext>:<hex_nonce>`. Plaintext and keys held in `secrecy`’s `SecretSlice` / `SecretBox`; debug impls redact sensitive data.
 
 Config can be removed or unset after startup so it does not remain on disk or in the process environment.
 

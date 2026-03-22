@@ -17,7 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use secrets::SecretVec;
+use secrecy::{ExposeSecret, SecretSlice};
 use serde::de::{Deserializer, Error as SerdeError, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub struct CipherTextObject {
 }
 
 pub struct PlainTextObject {
-    pub plaintext: SecretVec<u8>,
+    pub plaintext: SecretSlice<u8>,
 }
 
 impl Debug for PlainTextObject {
@@ -46,7 +46,7 @@ impl Serialize for PlainTextObject {
         S: serde::Serializer,
     {
         let mut st = serializer.serialize_struct("PlainTextObject", 1)?;
-        let bytes = self.plaintext.borrow();
+        let bytes = self.plaintext.expose_secret();
         let text = std::str::from_utf8(bytes.as_ref()).map_err(|e| {
             serde::ser::Error::custom(format!("plaintext is not valid UTF-8: {}", e))
         })?;
@@ -85,9 +85,7 @@ impl<'de> Deserialize<'de> for PlainTextObject {
                     }
                 }
                 let s = plaintext_str.ok_or_else(|| SerdeError::missing_field("plaintext"))?;
-                let bytes = s.as_bytes();
-                let len = bytes.len();
-                let plaintext = SecretVec::new(len, |buf| buf.copy_from_slice(bytes));
+                let plaintext = SecretSlice::from(s.into_bytes());
                 Ok(PlainTextObject { plaintext })
             }
         }
@@ -565,7 +563,7 @@ async fn db_query_handler(
         Ok(value) => value,
         Err(error) => return ApiError(error).into_response(),
     };
-    let mut connection_string = match std::str::from_utf8(plaintext.borrow().as_ref()) {
+    let mut connection_string = match std::str::from_utf8(plaintext.expose_secret()) {
         Ok(value) => value.to_string(),
         Err(error) => {
             return (
@@ -664,7 +662,7 @@ async fn proxy_substitute_handler(
         Ok(p) => p,
         Err(e) => return ApiError(e.into()).into_response(),
     };
-    let plaintext_str = match std::str::from_utf8(plaintext.borrow().as_ref()) {
+    let plaintext_str = match std::str::from_utf8(plaintext.expose_secret()) {
         Ok(value) => value.to_string(),
         Err(e) => {
             return (
@@ -780,15 +778,13 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use secrets::SecretVec;
+    use secrecy::{ExposeSecret, SecretSlice};
     use serde_json::json;
     use tower::ServiceExt;
 
     fn make_plaintext_object(s: &str) -> PlainTextObject {
-        let bytes = s.as_bytes();
-        let len = bytes.len();
         PlainTextObject {
-            plaintext: SecretVec::new(len, |buf| buf.copy_from_slice(bytes)),
+            plaintext: SecretSlice::from(s.as_bytes().to_vec()),
         }
     }
 
@@ -817,7 +813,7 @@ mod tests {
     fn test_serialize_invalid_utf8_fails() {
         let invalid_utf8: Vec<u8> = vec![0xff, 0xfe, 0xfd];
         let obj = PlainTextObject {
-            plaintext: SecretVec::new(invalid_utf8.len(), |buf| buf.copy_from_slice(&invalid_utf8)),
+            plaintext: SecretSlice::from(invalid_utf8),
         };
         let result = serde_json::to_string(&obj);
         assert!(result.is_err());
@@ -828,14 +824,14 @@ mod tests {
     fn test_deserialize_plaintext_object() {
         let json = r#"{"plaintext":"hello world"}"#;
         let obj: PlainTextObject = serde_json::from_str(json).unwrap();
-        assert_eq!(obj.plaintext.borrow().as_ref(), b"hello world");
+        assert_eq!(obj.plaintext.expose_secret(), b"hello world".as_slice());
     }
 
     #[test]
     fn test_deserialize_empty_string() {
         let json = r#"{"plaintext":""}"#;
         let obj: PlainTextObject = serde_json::from_str(json).unwrap();
-        assert_eq!(obj.plaintext.borrow().as_ref(), b"");
+        assert_eq!(obj.plaintext.expose_secret(), b"".as_slice());
     }
 
     #[test]
@@ -860,8 +856,8 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let restored: PlainTextObject = serde_json::from_str(&json).unwrap();
         assert_eq!(
-            original.plaintext.borrow().as_ref(),
-            restored.plaintext.borrow().as_ref()
+            original.plaintext.expose_secret(),
+            restored.plaintext.expose_secret()
         );
     }
 
@@ -869,7 +865,7 @@ mod tests {
     fn test_deserialize_ignores_extra_fields() {
         let json = r#"{"plaintext":"data","extra":"ignored","other":42}"#;
         let obj: PlainTextObject = serde_json::from_str(json).unwrap();
-        assert_eq!(obj.plaintext.borrow().as_ref(), b"data");
+        assert_eq!(obj.plaintext.expose_secret(), b"data".as_slice());
     }
 
     // --- Test config helpers ---
