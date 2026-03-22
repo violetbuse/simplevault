@@ -3,7 +3,7 @@ export default function ConfigDoc() {
     <article className="prose prose-invert max-w-none">
       <h1 className="text-3xl font-bold mb-2">Configuration File</h1>
       <p className="text-[var(--text-muted)] mb-8">
-        The SimpleVault server is configured via a JSON file or a base64-encoded JSON environment variable passed at startup.
+        The SimpleVault server is configured via a JSON file or an environment variable passed at startup (raw JSON or base64-encoded JSON).
       </p>
 
       <section className="mb-10">
@@ -155,7 +155,7 @@ simplevault config.json --port 3000`}
 
         <h3 className="font-semibold mb-2 text-[var(--accent)]">From environment variable</h3>
         <p className="text-[var(--text-muted)] mb-2 text-sm">
-          The env var must contain base64-encoded JSON (same format as the file). Use the Config Maker to export as Base64.
+          The env var may contain the same JSON as the file, or base64-encoded JSON (standard alphabet). Raw JSON is parsed first; if that fails, the value is decoded as base64 then parsed as JSON. Use the Config Maker to export as JSON or Base64.
         </p>
         <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-4">
 {`simplevault --config-env SIMPLEVAULT_CONFIG
@@ -174,7 +174,7 @@ simplevault --config-env SIMPLEVAULT_CONFIG --keep-config`}
       <section className="mb-10">
         <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Docker</h2>
         <p className="text-[var(--text-muted)] mb-4">
-          The Docker image expects config via the <code className="bg-black/30 px-1 rounded">SIMPLEVAULT_CONFIG</code> environment variable (base64-encoded JSON). Use the Config Maker to export your config as Base64.
+          The Docker image expects config via the <code className="bg-black/30 px-1 rounded">SIMPLEVAULT_CONFIG</code> environment variable (raw JSON or base64-encoded JSON). Use the Config Maker to export your config as JSON or Base64.
         </p>
 
         <h3 className="font-semibold mb-2 text-[var(--accent)]">Basic run</h3>

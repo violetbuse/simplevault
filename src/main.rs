@@ -17,7 +17,7 @@ struct Args {
     #[arg(required_unless_present = "config_env")]
     config_path: Option<PathBuf>,
 
-    /// Environment variable containing base64-encoded JSON config
+    /// Environment variable containing JSON config or base64-encoded JSON (same format as file)
     #[arg(long, conflicts_with = "config_path")]
     config_env: Option<String>,
 

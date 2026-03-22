@@ -44,7 +44,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/simplevault /app/simplevault
 
-# Config must be provided via --config-env (base64 JSON) or a mounted config file
-# Example: docker run -e SIMPLEVAULT_CONFIG="<base64>" simplevault --config-env SIMPLEVAULT_CONFIG
+# Config must be provided via --config-env (JSON or base64-encoded JSON) or a mounted config file
+# Example: docker run -e SIMPLEVAULT_CONFIG="<json-or-base64>" simplevault --config-env SIMPLEVAULT_CONFIG
 ENTRYPOINT ["/app/simplevault"]
 CMD ["--config-env", "SIMPLEVAULT_CONFIG"]
