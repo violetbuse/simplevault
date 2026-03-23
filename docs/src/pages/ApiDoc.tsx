@@ -166,7 +166,13 @@ export default function ApiDoc() {
                 Decrypt ciphertext internally to a Postgres connection string, reuse a connection pool keyed by the SHA-256 hash of that string, run a query, and return tabular JSON results.
               </p>
               <p className="text-[var(--text-muted)] text-sm mb-4">
+                Single-statement read and write queries are supported. Read queries return rows/columns; write queries (for example <code className="bg-black/30 px-1 rounded">create</code>, <code className="bg-black/30 px-1 rounded">insert</code>, <code className="bg-black/30 px-1 rounded">update</code>, <code className="bg-black/30 px-1 rounded">delete</code>) return <code className="bg-black/30 px-1 rounded">row_count</code> as affected rows with empty <code className="bg-black/30 px-1 rounded">rows</code>/<code className="bg-black/30 px-1 rounded">columns</code>.
+              </p>
+              <p className="text-[var(--text-muted)] text-sm mb-4">
                 Pool entries are evicted after 60 seconds of inactivity. If <code className="bg-black/30 px-1 rounded">db_destinations</code> is configured for the key set, the host/port must match the allowlist.
+              </p>
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                DB destination rules can also restrict query type with <code className="bg-black/30 px-1 rounded">access</code>. With <code className="bg-black/30 px-1 rounded">read_only</code>, read queries are allowed while write statements are rejected with <code className="bg-black/30 px-1 rounded">403</code>.
               </p>
               <p className="text-sm font-medium mb-2">Request body:</p>
               <pre className="bg-black/30 rounded p-4 text-sm font-mono mb-4">{`{

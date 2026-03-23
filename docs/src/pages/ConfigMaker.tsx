@@ -16,7 +16,7 @@ interface ConfigState {
   serverPort: number;
   keyNames: Record<string, KeyVersions>;
   outboundDestinations: Record<string, Array<{ host: string; path_prefix?: string; methods?: string[] }>>;
-  dbDestinations: Record<string, Array<{ host: string; port?: number }>>;
+  dbDestinations: Record<string, Array<{ host: string; port?: number; access?: "read_only" | "read_write" }>>;
 }
 
 interface OutboundDestinationRule {
@@ -91,7 +91,7 @@ export default function ConfigMaker() {
   const [importFormat, setImportFormat] = useState<"json" | "base64">("json");
   const [importError, setImportError] = useState<string | null>(null);
   const [outboundDestinations, setOutboundDestinations] = useState<Record<string, OutboundDestinationRule[]>>({});
-  const [dbDestinations, setDbDestinations] = useState<Record<string, Array<{ host: string; port: string }>>>({});
+  const [dbDestinations, setDbDestinations] = useState<Record<string, Array<{ host: string; port: string; access: "read_only" | "read_write" }>>>({});
 
   const serverPortValidation = (() => {
     const trimmed = serverPortInput.trim();
@@ -199,7 +199,7 @@ export default function ConfigMaker() {
     });
     setDbDestinations((prev) => {
       if (!(renamingKey in prev)) return prev;
-      const next: Record<string, Array<{ host: string; port: string }>> = {};
+      const next: Record<string, Array<{ host: string; port: string; access: "read_only" | "read_write" }>> = {};
       for (const [k, v] of Object.entries(prev)) {
         next[k === renamingKey ? newName : k] = v;
       }
@@ -312,7 +312,7 @@ export default function ConfigMaker() {
   const addDbDestinationRule = useCallback((keySet: string) => {
     setDbDestinations((prev) => ({
       ...prev,
-      [keySet]: [...(prev[keySet] ?? []), { host: "", port: "" }],
+      [keySet]: [...(prev[keySet] ?? []), { host: "", port: "", access: "read_write" }],
     }));
   }, []);
 
@@ -329,14 +329,14 @@ export default function ConfigMaker() {
   }, []);
 
   const updateDbDestinationRule = useCallback(
-    (keySet: string, index: number, field: "host" | "port", value: string) => {
+    (keySet: string, index: number, field: "host" | "port" | "access", value: string) => {
       setDbDestinations((prev) => {
         const rules = [...(prev[keySet] ?? [])];
-        const existing = rules[index] ?? { host: "", port: "" };
+        const existing = rules[index] ?? { host: "", port: "", access: "read_write" as const };
         rules[index] = {
           ...existing,
           [field]: value,
-        };
+        } as { host: string; port: string; access: "read_only" | "read_write" };
         return { ...prev, [keySet]: rules };
       });
     },
@@ -392,23 +392,28 @@ export default function ConfigMaker() {
     return result;
   })();
   const normalizedDbDestinations = (() => {
-    const result: Record<string, Array<{ host: string; port?: number }>> = {};
+    const result: Record<string, Array<{ host: string; port?: number; access?: "read_only" | "read_write" }>> = {};
     for (const keySet of Object.keys(dbDestinations)) {
       const rules = dbDestinations[keySet] ?? [];
-      const normalizedRules = rules
-        .map((rule) => {
-          const host = rule.host.trim();
-          if (!host) return null;
-          const parsedPort = rule.port.trim() === "" ? null : Number.parseInt(rule.port.trim(), 10);
-          if (parsedPort !== null && (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535)) {
-            return null;
-          }
-          return {
-            host,
-            ...(parsedPort !== null ? { port: parsedPort } : {}),
-          };
-        })
-        .filter((rule): rule is { host: string; port?: number } => rule !== null);
+      const normalizedRules: Array<{ host: string; port?: number; access?: "read_only" | "read_write" }> = [];
+      for (const rule of rules) {
+        const host = rule.host.trim();
+        if (!host) continue;
+        const parsedPort = rule.port.trim() === "" ? null : Number.parseInt(rule.port.trim(), 10);
+        if (parsedPort !== null && (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535)) {
+          continue;
+        }
+        const normalizedRule: { host: string; port?: number; access?: "read_only" | "read_write" } = {
+          host,
+        };
+        if (parsedPort !== null) {
+          normalizedRule.port = parsedPort;
+        }
+        if (rule.access === "read_only") {
+          normalizedRule.access = "read_only";
+        }
+        normalizedRules.push(normalizedRule);
+      }
       result[keySet] = normalizedRules;
     }
     return result;
@@ -542,7 +547,7 @@ export default function ConfigMaker() {
       }
       const dbDestinations = obj.db_destinations;
       if (typeof dbDestinations === "object" && dbDestinations !== null && !Array.isArray(dbDestinations)) {
-        const parsedDestinations: Record<string, Array<{ host: string; port: string }>> = {};
+        const parsedDestinations: Record<string, Array<{ host: string; port: string; access: "read_only" | "read_write" }>> = {};
         for (const [keySet, ruleList] of Object.entries(dbDestinations as Record<string, unknown>)) {
           if (!Array.isArray(ruleList)) continue;
           parsedDestinations[keySet] = ruleList
@@ -551,9 +556,10 @@ export default function ConfigMaker() {
               const value = rule as Record<string, unknown>;
               const host = typeof value.host === "string" ? value.host : "";
               const port = typeof value.port === "number" ? String(value.port) : "";
-              return { host, port };
+              const access = value.access === "read_only" ? "read_only" : "read_write";
+              return { host, port, access };
             })
-            .filter((rule): rule is { host: string; port: string } => rule !== null);
+            .filter((rule): rule is { host: string; port: string; access: "read_only" | "read_write" } => rule !== null);
         }
         setDbDestinations(parsedDestinations);
       } else {
@@ -907,7 +913,8 @@ export default function ConfigMaker() {
         </h2>
         <p className="text-[var(--text-muted)] text-sm mb-4">
           Optional per-key-set host/port allow rules for <code className="bg-black/30 px-1 rounded">db-query</code>.
-          If policy is not configured for a key set, DB destinations are allowed by default.
+          If policy is not configured for a key set, DB destinations are allowed by default. Each rule can also set
+          access mode: <code className="bg-black/30 px-1 rounded">read_only</code> or <code className="bg-black/30 px-1 rounded">read_write</code>.
         </p>
         <div className="space-y-4">
           {Object.keys(keyNames).length === 0 && (
@@ -962,7 +969,7 @@ export default function ConfigMaker() {
                   <div className="space-y-3">
                     {rules.map((rule, idx) => (
                       <div key={`db-rule-${keySet}-${idx}`} className="border border-[var(--border)] rounded-lg p-3 space-y-3">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                           <input
                             type="text"
                             value={rule.host}
@@ -977,6 +984,14 @@ export default function ConfigMaker() {
                             placeholder="Port (optional, default any)"
                             className="bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                           />
+                          <select
+                            value={rule.access}
+                            onChange={(e) => updateDbDestinationRule(keySet, idx, "access", e.target.value)}
+                            className="bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                          >
+                            <option value="read_write">read_write</option>
+                            <option value="read_only">read_only</option>
+                          </select>
                         </div>
                         <div className="flex justify-end">
                           <button

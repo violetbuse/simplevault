@@ -30,6 +30,7 @@ export interface OutboundDestinationRule {
 export interface DbDestinationRule {
   host: string;
   port?: number;
+  access?: 'read_only' | 'read_write';
 }
 
 const DEFAULT_KEY =

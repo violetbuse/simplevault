@@ -434,6 +434,32 @@ async fn run_prepared_query(
     }
 }
 
+fn first_sql_token(sql: &str) -> String {
+    sql.split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn with_sql_contains_write_keyword(sql: &str) -> bool {
+    let normalized = sql.to_ascii_lowercase();
+    ["insert", "update", "delete", "merge"]
+        .iter()
+        .any(|keyword| normalized.contains(keyword))
+}
+
+pub fn sql_requires_write(sql: &str) -> bool {
+    match first_sql_token(sql).as_str() {
+        "select" | "values" => false,
+        "with" => with_sql_contains_write_keyword(sql),
+        _ => true,
+    }
+}
+
+pub fn sql_starts_with_read_keyword(sql: &str) -> bool {
+    !sql_requires_write(sql)
+}
+
 fn format_pg_db_error(db_error: &DbError) -> String {
     let mut parts = Vec::new();
     parts.push(format!(
@@ -483,67 +509,89 @@ pub async fn run_query(
     }
     let start = Instant::now();
     let client = pool.get().await?;
-    let wrapped_sql = format!(
-        "SELECT row_to_json(simplevault_row) AS simplevault_row_json FROM ({}) AS simplevault_row",
-        trimmed_sql
-    );
+    if sql_starts_with_read_keyword(trimmed_sql) {
+        let wrapped_sql = format!(
+            "SELECT row_to_json(simplevault_row) AS simplevault_row_json FROM ({}) AS simplevault_row",
+            trimmed_sql
+        );
 
-    let db_rows = match run_prepared_query(&client, wrapped_sql.as_str(), params, timeout_ms, true)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(error) => {
-            let message = error.to_string().to_ascii_lowercase();
-            if message.contains("error serializing parameter") {
-                run_prepared_query(&client, wrapped_sql.as_str(), params, timeout_ms, false).await?
-            } else {
-                return Err(error);
+        let db_rows = match run_prepared_query(&client, wrapped_sql.as_str(), params, timeout_ms, true)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                let message = error.to_string().to_ascii_lowercase();
+                if message.contains("error serializing parameter") {
+                    run_prepared_query(&client, wrapped_sql.as_str(), params, timeout_ms, false).await?
+                } else {
+                    return Err(error);
+                }
+            }
+        };
+        let mut rows_json = Vec::with_capacity(db_rows.len());
+        for row in db_rows {
+            let Json(value): Json<Value> = row.try_get("simplevault_row_json").map_err(|error| {
+                anyhow::anyhow!("failed to deserialize query result row: {}", error)
+            })?;
+            rows_json.push(value);
+        }
+
+        let mut columns = Vec::new();
+        if let Some(Value::Object(first_row)) = rows_json.first() {
+            for key in first_row.keys() {
+                columns.push(DbQueryColumn {
+                    name: key.to_string(),
+                    db_type: None,
+                });
             }
         }
-    };
-    let mut rows_json = Vec::with_capacity(db_rows.len());
-    for row in db_rows {
-        let Json(value): Json<Value> = row.try_get("simplevault_row_json").map_err(|error| {
-            anyhow::anyhow!("failed to deserialize query result row: {}", error)
-        })?;
-        rows_json.push(value);
-    }
+        let ordered_names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
 
-    let mut columns = Vec::new();
-    if let Some(Value::Object(first_row)) = rows_json.first() {
-        for key in first_row.keys() {
-            columns.push(DbQueryColumn {
-                name: key.to_string(),
-                db_type: None,
-            });
+        let row_count = rows_json.len();
+        let truncated = row_count > max_rows;
+        if truncated {
+            rows_json.truncate(max_rows);
         }
-    }
-    let ordered_names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
+        let rows = rows_json
+            .iter()
+            .map(|row_value| {
+                let object = row_value.as_object().cloned().unwrap_or_default();
+                ordered_names
+                    .iter()
+                    .map(|name| object.get(name).cloned().unwrap_or(Value::Null))
+                    .collect::<Vec<Value>>()
+            })
+            .collect::<Vec<Vec<Value>>>();
+        let timing_ms = start.elapsed().as_millis();
 
-    let row_count = rows_json.len();
-    let truncated = row_count > max_rows;
-    if truncated {
-        rows_json.truncate(max_rows);
-    }
-    let rows = rows_json
-        .iter()
-        .map(|row_value| {
-            let object = row_value.as_object().cloned().unwrap_or_default();
-            ordered_names
-                .iter()
-                .map(|name| object.get(name).cloned().unwrap_or(Value::Null))
-                .collect::<Vec<Value>>()
+        Ok(DbQueryResult {
+            columns,
+            rows,
+            row_count,
+            truncated,
+            timing_ms,
         })
-        .collect::<Vec<Vec<Value>>>();
-    let timing_ms = start.elapsed().as_millis();
+    } else {
+        let owned_params = parse_query_params(params, true)?;
+        let borrowed_params: Vec<&(dyn ToSql + Sync)> =
+            owned_params.iter().map(QueryParamOwned::as_tosql).collect();
+        let execute_result = timeout(
+            Duration::from_millis(timeout_ms),
+            client.execute(trimmed_sql, borrowed_params.as_slice()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("query execution timed out"))?;
+        let affected_rows = execute_result.map_err(format_pg_query_error)? as usize;
+        let timing_ms = start.elapsed().as_millis();
 
-    Ok(DbQueryResult {
-        columns,
-        rows,
-        row_count,
-        truncated,
-        timing_ms,
-    })
+        Ok(DbQueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            row_count: affected_rows,
+            truncated: false,
+            timing_ms,
+        })
+    }
 }
 
 pub fn sanitize_connection_string(connection_string: &mut String) {

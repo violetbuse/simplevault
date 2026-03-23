@@ -72,12 +72,25 @@ impl Config {
         rules.iter().any(|rule| rule.matches(method, host, path))
     }
 
+    #[cfg(test)]
     pub fn db_destination_allowed(&self, key_name: &str, host: &str, port: u16) -> bool {
+        self.db_destination_allows_query(key_name, host, port, false)
+    }
+
+    pub fn db_destination_allows_query(
+        &self,
+        key_name: &str,
+        host: &str,
+        port: u16,
+        requires_write: bool,
+    ) -> bool {
         let rules = match self.db_destinations.get(key_name) {
             Some(value) => value,
             None => return true,
         };
-        rules.iter().any(|rule| rule.matches(host, port))
+        rules
+            .iter()
+            .any(|rule| rule.host_port_matches(host, port) && rule.allows_query(requires_write))
     }
 
     #[cfg(test)]
@@ -267,21 +280,49 @@ impl OutboundDestinationRule {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DbQueryAccessMode {
+    ReadOnly,
+    ReadWrite,
+}
+
+impl DbQueryAccessMode {
+    fn allows_write(&self) -> bool {
+        matches!(self, DbQueryAccessMode::ReadWrite)
+    }
+}
+
+impl Default for DbQueryAccessMode {
+    fn default() -> Self {
+        DbQueryAccessMode::ReadWrite
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct DbDestinationRule {
     pub host: String,
     #[serde(default)]
     pub port: Option<u16>,
+    #[serde(default)]
+    pub access: DbQueryAccessMode,
 }
 
 impl DbDestinationRule {
-    fn matches(&self, host: &str, port: u16) -> bool {
-        if self.host.trim().to_ascii_lowercase() != host.trim().to_ascii_lowercase() {
+    fn host_port_matches(&self, host: &str, port: u16) -> bool {
+        if !self.host.trim().eq_ignore_ascii_case(host.trim()) {
             return false;
         }
         match self.port {
             Some(expected_port) => expected_port == port,
             None => true,
         }
+    }
+
+    fn allows_query(&self, requires_write: bool) -> bool {
+        if !requires_write {
+            return true;
+        }
+        self.access.allows_write()
     }
 }
 
@@ -736,6 +777,26 @@ mod tests {
         assert!(!config.db_destination_allowed("vault", "db.internal", 5433));
         assert!(config.db_destination_allowed("vault", "db-read.internal", 6000));
         assert!(!config.db_destination_allowed("vault", "unknown.internal", 5432));
+    }
+
+    #[test]
+    fn db_destination_policy_enforces_read_only_vs_read_write_access() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "db_destinations": {
+                "vault": [
+                    { "host": "db-read.internal", "access": "read_only" },
+                    { "host": "db-write.internal", "access": "read_write" }
+                ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.db_destination_allows_query("vault", "db-read.internal", 5432, false));
+        assert!(!config.db_destination_allows_query("vault", "db-read.internal", 5432, true));
+        assert!(config.db_destination_allows_query("vault", "db-write.internal", 5432, false));
+        assert!(config.db_destination_allows_query("vault", "db-write.internal", 5432, true));
     }
 
     #[test]

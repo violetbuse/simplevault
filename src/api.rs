@@ -585,12 +585,16 @@ async fn db_query_handler(
                 .into_response();
         }
     };
+    let requires_write = db_query::sql_requires_write(&body.query.sql);
     for (host, port) in &targets {
-        if !state.config.db_destination_allowed(&key_name, host, *port) {
+        if !state
+            .config
+            .db_destination_allows_query(&key_name, host, *port, requires_write)
+        {
             db_query::sanitize_connection_string(&mut connection_string);
             return (
                 StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": "database destination is not allowed for this key set" })),
+                Json(serde_json::json!({ "error": "database destination is not allowed for this key set or query type" })),
             )
                 .into_response();
         }
@@ -1010,6 +1014,22 @@ mod tests {
             "db_destinations": {
                 "vault": [
                     { "host": "db-allowed.internal", "port": 5432 }
+                ]
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn config_with_db_read_only_destinations_for_vault() -> Config {
+        let json = r#"{
+            "api_keys": [{ "value": "db-query-key", "keys": "all", "operations": ["db_query", "encrypt"] }],
+            "server_port": 8080,
+            "keys": {
+                "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            },
+            "db_destinations": {
+                "vault": [
+                    { "host": "db-allowed.internal", "port": 5432, "access": "read_only" }
                 ]
             }
         }"#;
@@ -1918,6 +1938,102 @@ mod tests {
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn db_query_read_only_destination_allows_read_queries() {
+        let app = build_router(config_with_db_read_only_destinations_for_vault());
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                r#"{"plaintext":"postgres://user:pass@db-allowed.internal:5432/app"}"#,
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": { "sql": "select 1" },
+                    "options": { "timeout_ms": 200 }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn db_query_read_only_destination_rejects_write_queries() {
+        let app = build_router(config_with_db_read_only_destinations_for_vault());
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                r#"{"plaintext":"postgres://user:pass@db-allowed.internal:5432/app"}"#,
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": { "sql": "create table blocked_write_test (id int)" }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn db_query_read_only_destination_rejects_writable_cte_queries() {
+        let app = build_router(config_with_db_read_only_destinations_for_vault());
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                r#"{"plaintext":"postgres://user:pass@db-allowed.internal:5432/app"}"#,
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let body = read_body(encrypt_resp).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ciphertext = parsed["ciphertext"].as_str().unwrap().to_string();
+
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": {
+                        "sql": "with deleted as (delete from t where false returning *) select * from deleted"
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

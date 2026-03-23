@@ -99,6 +99,7 @@ function createRuntimeConfigPath() {
       parsed.db_destinations = {};
     }
     parsed.db_destinations.vault = [{ host, port }];
+    parsed.db_destinations.readonly = [{ host, port, access: 'read_only' }];
   }
   writeFileSync(runtimeConfigPath, JSON.stringify(parsed, null, 2), 'utf8');
   return runtimeConfigPath;

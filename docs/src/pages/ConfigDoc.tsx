@@ -27,7 +27,7 @@ export default function ConfigDoc() {
   },
   "db_destinations": {
     "vault": [
-      { "host": "db.internal", "port": 5432 }
+      { "host": "db.internal", "port": 5432, "access": "read_only" }
     ]
   }
 }`}
@@ -97,6 +97,8 @@ export default function ConfigDoc() {
             <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1">
               <li>Key is the key set name (for example <code className="bg-black/30 px-1 rounded">vault</code>)</li>
               <li>Each rule requires <code className="bg-black/30 px-1 rounded">host</code> and may include <code className="bg-black/30 px-1 rounded">port</code></li>
+              <li>Each rule may include <code className="bg-black/30 px-1 rounded">access</code>: <code className="bg-black/30 px-1 rounded">"read_only"</code> or <code className="bg-black/30 px-1 rounded">"read_write"</code> (default)</li>
+              <li><code className="bg-black/30 px-1 rounded">read_only</code> allows SELECT/CTE/VALUES style reads only; write statements like CREATE/INSERT/UPDATE/DELETE are blocked</li>
               <li>If this object is missing, DB destinations are allowed by default</li>
               <li>If the key set exists with an empty rule list, all DB destinations are denied for that key set</li>
             </ul>
@@ -125,7 +127,8 @@ export default function ConfigDoc() {
   },
   "db_destinations": {
     "vault": [
-      { "host": "db.internal", "port": 5432 }
+      { "host": "db.internal", "port": 5432, "access": "read_only" },
+      { "host": "db.internal", "port": 5432, "access": "read_write" }
     ]
   }
 }`}

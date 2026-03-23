@@ -225,7 +225,13 @@ function parseConnectionTargets(connectionString: string): Array<{ host: string;
   return [{ host: parsed.hostname, port }];
 }
 
-function dbDestinationAllowed(config: DevConfig, keyName: string, host: string, port: number): boolean {
+function dbDestinationAllowsQuery(
+  config: DevConfig,
+  keyName: string,
+  host: string,
+  port: number,
+  requiresWrite: boolean
+): boolean {
   const rules = config.db_destinations?.[keyName];
   if (!rules) {
     return true;
@@ -235,6 +241,9 @@ function dbDestinationAllowed(config: DevConfig, keyName: string, host: string, 
       return false;
     }
     if (typeof rule.port === 'number' && rule.port !== port) {
+      return false;
+    }
+    if (requiresWrite && rule.access === 'read_only') {
       return false;
     }
     return true;
@@ -356,6 +365,31 @@ function formatPgError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function withSqlContainsWriteKeyword(sql: string): boolean {
+  const normalized = sql.toLowerCase();
+  return (
+    normalized.includes('insert') ||
+    normalized.includes('update') ||
+    normalized.includes('delete') ||
+    normalized.includes('merge')
+  );
+}
+
+function sqlRequiresWrite(sql: string): boolean {
+  const firstToken = sql.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? '';
+  if (firstToken === 'select' || firstToken === 'values') {
+    return false;
+  }
+  if (firstToken === 'with') {
+    return withSqlContainsWriteKeyword(sql);
+  }
+  return true;
+}
+
+function sqlStartsWithReadKeyword(sql: string): boolean {
+  return !sqlRequiresWrite(sql);
 }
 
 export function createDevServer(config: DevConfig): express.Application {
@@ -774,9 +808,10 @@ export function createDevServer(config: DevConfig): express.Application {
       return;
     }
     for (const target of targets) {
-      if (!dbDestinationAllowed(config, keyName, target.host, target.port)) {
+      const requiresWrite = sqlRequiresWrite(String(queryObject.sql));
+      if (!dbDestinationAllowsQuery(config, keyName, target.host, target.port, requiresWrite)) {
         connectionString = '';
-        res.status(403).json({ error: 'database destination is not allowed for this key set' });
+        res.status(403).json({ error: 'database destination is not allowed for this key set or query type' });
         return;
       }
     }
@@ -803,20 +838,29 @@ export function createDevServer(config: DevConfig): express.Application {
       10_000
     );
 
-    const wrappedSql = `SELECT row_to_json(simplevault_row) AS simplevault_row_json FROM (${queryObject.sql}) AS simplevault_row`;
     const startedAt = Date.now();
     try {
-      const resultPromise = pool.query(wrappedSql, params);
+      const sql = String(queryObject.sql);
+      const runSql = async (): Promise<pg.QueryResult> => {
+        if (sqlStartsWithReadKeyword(sql)) {
+          const wrappedSql = `SELECT row_to_json(simplevault_row) AS simplevault_row_json FROM (${sql}) AS simplevault_row`;
+          return pool.query(wrappedSql, params);
+        }
+        return pool.query(sql, params);
+      };
+      const resultPromise = runSql();
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('query execution timed out')), timeoutMs);
       });
       const queryResult = await Promise.race([resultPromise, timeoutPromise]);
-      const rawRows = (queryResult.rows as Array<{ simplevault_row_json: Record<string, unknown> | null }>).map(
-        (row) => row.simplevault_row_json ?? {}
-      );
+      const rawRows = sqlStartsWithReadKeyword(sql)
+        ? (queryResult.rows as Array<{ simplevault_row_json: Record<string, unknown> | null }>).map(
+            (row) => row.simplevault_row_json ?? {}
+          )
+        : [];
       const columns = rawRows.length > 0 ? Object.keys(rawRows[0]).map((name) => ({ name })) : [];
       const orderedColumnNames = columns.map((column) => column.name);
-      const rowCount = rawRows.length;
+      const rowCount = sqlStartsWithReadKeyword(sql) ? rawRows.length : Number(queryResult.rowCount ?? 0);
       const truncated = rowCount > maxRows;
       const slicedRows = truncated ? rawRows.slice(0, maxRows) : rawRows;
       const rows = slicedRows.map((row) =>

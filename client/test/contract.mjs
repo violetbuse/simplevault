@@ -420,6 +420,94 @@ describe('SimpleVault API contract', () => {
       assert.ok(result.data?.error?.includes('not allowed for this operation'));
     });
 
+    it('allows read queries for read-only DB destination rules when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request(
+        'POST',
+        '/v1/readonly/encrypt',
+        { plaintext: TEST_DB_URL },
+        'readonly-contract-key'
+      );
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request(
+        'POST',
+        '/v1/readonly/db-query',
+        {
+          ciphertext: encrypted.data.ciphertext,
+          query: { sql: 'select 1 as n' },
+        },
+        'readonly-contract-key'
+      );
+      assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}`);
+      assert.strictEqual(result.data?.row_count, 1);
+      assert.strictEqual(result.data?.rows?.[0]?.[0], 1);
+    });
+
+    it('rejects write queries for read-only DB destination rules when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request(
+        'POST',
+        '/v1/readonly/encrypt',
+        { plaintext: TEST_DB_URL },
+        'readonly-contract-key'
+      );
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const tableName = `simplevault_contract_readonly_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+      const result = await request(
+        'POST',
+        '/v1/readonly/db-query',
+        {
+          ciphertext: encrypted.data.ciphertext,
+          query: { sql: `create table ${tableName} (id int primary key)` },
+        },
+        'readonly-contract-key'
+      );
+      assert.strictEqual(result.status, 403, `Expected 403, got ${result.status}`);
+      assert.ok(
+        result.data?.error?.includes('query type'),
+        `Expected read-only db destination error, got ${JSON.stringify(result.data)}`
+      );
+    });
+
+    it('rejects writable CTE queries for read-only DB destination rules when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request(
+        'POST',
+        '/v1/readonly/encrypt',
+        { plaintext: TEST_DB_URL },
+        'readonly-contract-key'
+      );
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request(
+        'POST',
+        '/v1/readonly/db-query',
+        {
+          ciphertext: encrypted.data.ciphertext,
+          query: {
+            sql: 'with deleted as (delete from pg_type where false returning oid) select count(*) from deleted',
+          },
+        },
+        'readonly-contract-key'
+      );
+      assert.strictEqual(result.status, 403, `Expected 403, got ${result.status}`);
+      assert.ok(
+        result.data?.error?.includes('query type'),
+        `Expected read-only db destination error, got ${JSON.stringify(result.data)}`
+      );
+    });
+
     it('returns descriptive SQL errors when DB tests enabled', async () => {
       if (!ENABLE_DB_TESTS) {
         return;
@@ -552,6 +640,86 @@ describe('SimpleVault API contract', () => {
       assert.strictEqual(result.data?.rows?.[0]?.[0], 1);
       assert.strictEqual(result.data?.rows?.[0]?.[1], 2);
       assert.strictEqual(result.data?.rows?.[0]?.[2], 3);
+    });
+
+    it('creates a table and writes rows when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request('POST', '/v1/vault/encrypt', {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const tableName = `simplevault_contract_write_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+
+      const createResult = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: `create table ${tableName} (id int primary key, label text not null)`,
+        },
+        options: {
+          timeout_ms: 3000,
+          max_rows: 100,
+        },
+      });
+      assert.strictEqual(
+        createResult.status,
+        200,
+        `Expected table creation to succeed, got ${createResult.status} with body ${JSON.stringify(createResult.data)}`
+      );
+
+      const insertResult = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: `insert into ${tableName} (id, label) values ($1::int, $2::text), ($3::int, $4::text)`,
+          params: [1, 'first', 2, 'second'],
+        },
+        options: {
+          timeout_ms: 3000,
+          max_rows: 100,
+        },
+      });
+      assert.strictEqual(
+        insertResult.status,
+        200,
+        `Expected insert to succeed, got ${insertResult.status} with body ${JSON.stringify(insertResult.data)}`
+      );
+      assert.strictEqual(insertResult.data?.row_count, 2);
+      assert.strictEqual(insertResult.data?.truncated, false);
+
+      const selectResult = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: `select id, label from ${tableName} order by id asc`,
+        },
+        options: {
+          timeout_ms: 3000,
+          max_rows: 100,
+        },
+      });
+      assert.strictEqual(
+        selectResult.status,
+        200,
+        `Expected select to succeed, got ${selectResult.status} with body ${JSON.stringify(selectResult.data)}`
+      );
+      assert.strictEqual(selectResult.data?.row_count, 2);
+      assert.strictEqual(selectResult.data?.rows?.[0]?.[0], 1);
+      assert.strictEqual(selectResult.data?.rows?.[0]?.[1], 'first');
+      assert.strictEqual(selectResult.data?.rows?.[1]?.[0], 2);
+      assert.strictEqual(selectResult.data?.rows?.[1]?.[1], 'second');
+
+      await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: `drop table ${tableName}`,
+        },
+        options: {
+          timeout_ms: 3000,
+          max_rows: 100,
+        },
+      });
     });
   });
 });
