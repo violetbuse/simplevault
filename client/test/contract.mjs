@@ -476,6 +476,34 @@ describe('SimpleVault API contract', () => {
       assert.strictEqual(result.data?.rows?.[0]?.[1], 'gold');
     });
 
+    it('supports typed timestamptz params when DB tests enabled', async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request('POST', '/v1/vault/encrypt', {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, 'encrypt should succeed');
+
+      const result = await request('POST', '/v1/vault/db-query', {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: "select ($1::timestamptz at time zone 'UTC')::text as ts",
+          params: [
+            { param_type: 'timestamptz', value: '2025-01-02T03:04:05+00:00' },
+          ],
+        },
+      });
+
+      assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}`);
+      assert.strictEqual(result.data?.row_count, 1);
+      assert.ok(
+        String(result.data?.rows?.[0]?.[0] ?? '').startsWith('2025-01-02 03:04:05'),
+        `Expected timestamp text, got ${JSON.stringify(result.data)}`
+      );
+    });
+
     it('supports untyped object and array params as json when DB tests enabled', async () => {
       if (!ENABLE_DB_TESTS) {
         return;

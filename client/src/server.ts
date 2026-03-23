@@ -241,7 +241,9 @@ function dbDestinationAllowed(config: DevConfig, keyName: string, host: string, 
   });
 }
 
-function parseDbParams(values: unknown): Array<string | number | boolean | null | Record<string, unknown> | unknown[]> {
+function parseDbParams(
+  values: unknown
+): Array<string | number | boolean | null | Buffer | Record<string, unknown> | unknown[]> {
   if (!Array.isArray(values)) {
     return [];
   }
@@ -280,6 +282,9 @@ function parseDbParams(values: unknown): Array<string | number | boolean | null 
           case 'int4':
           case 'integer':
           case 'i32':
+          case 'smallint':
+          case 'int2':
+          case 'i16':
           case 'bigint':
           case 'int8':
           case 'i64':
@@ -291,6 +296,22 @@ function parseDbParams(values: unknown): Array<string | number | boolean | null 
               throw new Error(`typed param ${normalizedType} requires a numeric value`);
             }
             return typedValue;
+          case 'timestamptz':
+          case 'timestamp with time zone':
+          case 'timestamp':
+          case 'timestamp without time zone':
+          case 'date':
+          case 'time':
+          case 'uuid':
+            if (typeof typedValue !== 'string') {
+              throw new Error(`typed param ${normalizedType} requires a string value`);
+            }
+            return typedValue;
+          case 'bytea':
+            if (typeof typedValue !== 'string') {
+              throw new Error('typed param bytea requires a hex string value');
+            }
+            return Buffer.from(typedValue.replace(/^\\x|^0x/i, ''), 'hex');
           case 'text':
           case 'varchar':
           case 'string':
@@ -764,7 +785,7 @@ export function createDevServer(config: DevConfig): express.Application {
     const pool = dbPoolCache.getOrCreate(hash, connectionString);
     connectionString = '';
 
-    let params: Array<string | number | boolean | null | Record<string, unknown> | unknown[]>;
+    let params: Array<string | number | boolean | null | Buffer | Record<string, unknown> | unknown[]>;
     try {
       params = parseDbParams(queryObject.params);
     } catch (error) {

@@ -195,6 +195,9 @@ export default function ApiDoc() {
               <p className="text-[var(--text-muted)] text-sm mb-4">
                 Plain JSON objects/arrays are also accepted as JSON params (for example <code className="bg-black/30 px-1 rounded">{`{"kind":"customer"}`}</code> or <code className="bg-black/30 px-1 rounded">[1,2,3]</code>). Only objects that exactly match <code className="bg-black/30 px-1 rounded">{`{"param_type":"...","value":...}`}</code> use typed binding mode.
               </p>
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                Common typed aliases include <code className="bg-black/30 px-1 rounded">bool</code>, <code className="bg-black/30 px-1 rounded">int2</code>, <code className="bg-black/30 px-1 rounded">int4</code>, <code className="bg-black/30 px-1 rounded">int8</code>, <code className="bg-black/30 px-1 rounded">float8</code>, <code className="bg-black/30 px-1 rounded">text</code>, <code className="bg-black/30 px-1 rounded">varchar</code>, <code className="bg-black/30 px-1 rounded">timestamptz</code>, <code className="bg-black/30 px-1 rounded">timestamp</code>, <code className="bg-black/30 px-1 rounded">date</code>, <code className="bg-black/30 px-1 rounded">time</code>, <code className="bg-black/30 px-1 rounded">uuid</code>, <code className="bg-black/30 px-1 rounded">bytea</code>, <code className="bg-black/30 px-1 rounded">json</code>, and <code className="bg-black/30 px-1 rounded">jsonb</code>. For <code className="bg-black/30 px-1 rounded">timestamptz</code>, pass an RFC3339 string.
+              </p>
               <p className="text-sm font-medium mb-2">Response:</p>
               <pre className="bg-black/30 rounded p-4 text-sm font-mono">{`{
   "columns": [{ "name": "id" }, { "name": "email" }],

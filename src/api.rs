@@ -1304,7 +1304,9 @@ mod tests {
         let encrypt_req = Request::post("/v1/vault/encrypt")
             .header("content-type", "application/json")
             .header("x-api-key", "encrypt-decrypt-key")
-            .body(Body::from(r#"{"plaintext":"postgres://u:p@db.internal:5432/app"}"#))
+            .body(Body::from(
+                r#"{"plaintext":"postgres://u:p@db.internal:5432/app"}"#,
+            ))
             .unwrap();
         let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
         assert_eq!(encrypt_resp.status(), StatusCode::OK);
@@ -1861,7 +1863,9 @@ mod tests {
         let encrypt_req = Request::post("/v1/vault/encrypt")
             .header("content-type", "application/json")
             .header("x-api-key", "db-query-key")
-            .body(Body::from(r#"{"plaintext":"postgres://user:pass@db-blocked.internal:5432/app"}"#))
+            .body(Body::from(
+                r#"{"plaintext":"postgres://user:pass@db-blocked.internal:5432/app"}"#,
+            ))
             .unwrap();
         let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
         assert_eq!(encrypt_resp.status(), StatusCode::OK);
@@ -1890,7 +1894,9 @@ mod tests {
         let encrypt_app = build_router(config_no_auth());
         let encrypt_req = Request::post("/v1/vault/encrypt")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"plaintext":"postgres://user:pass@db.internal:5432/app"}"#))
+            .body(Body::from(
+                r#"{"plaintext":"postgres://user:pass@db.internal:5432/app"}"#,
+            ))
             .unwrap();
         let encrypt_resp = encrypt_app.oneshot(encrypt_req).await.unwrap();
         assert_eq!(encrypt_resp.status(), StatusCode::OK);
@@ -2053,7 +2059,9 @@ mod tests {
             error_message
         );
         assert!(
-            error_message.to_ascii_lowercase().contains("missing_column")
+            error_message
+                .to_ascii_lowercase()
+                .contains("missing_column")
                 || error_message.to_ascii_lowercase().contains("column"),
             "expected column context in error message, got: {}",
             error_message
@@ -2123,6 +2131,74 @@ mod tests {
         assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
         assert_eq!(query_json["rows"][0][0].as_str().unwrap(), "customer");
         assert_eq!(query_json["rows"][0][1].as_str().unwrap(), "gold");
+    }
+
+    #[tokio::test]
+    async fn db_query_supports_typed_timestamptz_params_when_enabled() {
+        if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
+            return;
+        }
+        let connection_string = std::env::var("SIMPLEVAULT_TEST_DB_URL").unwrap_or_else(|_| {
+            "postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test".to_string()
+        });
+        let targets = crate::db_query::parse_connection_targets(&connection_string).unwrap();
+        let (allowed_host, allowed_port) = targets.first().cloned().unwrap();
+        let config_json = format!(
+            r#"{{
+            "api_keys": [{{ "value": "db-query-key", "keys": "all", "operations": ["encrypt", "db_query"] }}],
+            "server_port": 8080,
+            "keys": {{
+                "vault": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "db_destinations": {{
+                "vault": [{{ "host": "{}", "port": {} }}]
+            }}
+        }}"#,
+            allowed_host, allowed_port
+        );
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let app = build_router(config);
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({ "plaintext": connection_string }).to_string(),
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let encrypt_body = read_body(encrypt_resp).await;
+        let encrypt_json: serde_json::Value = serde_json::from_slice(&encrypt_body).unwrap();
+        let ciphertext = encrypt_json["ciphertext"].as_str().unwrap().to_string();
+
+        let query_req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": {
+                        "sql": "select ($1::timestamptz at time zone 'UTC')::text as ts",
+                        "params": [
+                            { "param_type": "timestamptz", "value": "2025-01-02T03:04:05+00:00" }
+                        ]
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let query_resp = app.oneshot(query_req).await.unwrap();
+        assert_eq!(query_resp.status(), StatusCode::OK);
+        let query_body = read_body(query_resp).await;
+        let query_json: serde_json::Value = serde_json::from_slice(&query_body).unwrap();
+        assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
+        assert!(
+            query_json["rows"][0][0]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("2025-01-02 03:04:05")
+        );
     }
 
     #[tokio::test]
