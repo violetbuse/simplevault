@@ -257,26 +257,15 @@ function parseDbParams(
     return [];
   }
   return values.map((value) => {
-    if (
-      value === null ||
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean'
-    ) {
-      return value;
-    }
-    if (Array.isArray(value)) {
-      return JSON.stringify(value);
-    }
     if (typeof value === 'object' && value !== null) {
       const maybeTyped = value as Record<string, unknown>;
       const strictTypedShape =
         Object.keys(maybeTyped).length === 2 &&
-        Object.prototype.hasOwnProperty.call(maybeTyped, 'param_type') &&
+        Object.prototype.hasOwnProperty.call(maybeTyped, 'type') &&
         Object.prototype.hasOwnProperty.call(maybeTyped, 'value') &&
-        typeof maybeTyped.param_type === 'string';
+        typeof maybeTyped.type === 'string';
       if (strictTypedShape) {
-        const normalizedType = (maybeTyped.param_type as string).trim().toLowerCase();
+        const normalizedType = (maybeTyped.type as string).trim().toLowerCase();
         const typedValue = maybeTyped.value;
         switch (normalizedType) {
           case 'null':
@@ -330,14 +319,13 @@ function parseDbParams(
             return typedValue;
           case 'json':
           case 'jsonb':
-          return JSON.stringify(typedValue);
+            return JSON.stringify(typedValue);
           default:
             throw new Error(`unsupported typed param type: ${normalizedType}`);
         }
       }
-      return JSON.stringify(value);
     }
-    throw new Error('query params support only null, bool, number, and string values');
+    throw new Error('query params must use typed form: {"type":"...","value":...}');
   });
 }
 
@@ -855,8 +843,8 @@ export function createDevServer(config: DevConfig): express.Application {
       const queryResult = await Promise.race([resultPromise, timeoutPromise]);
       const rawRows = sqlStartsWithReadKeyword(sql)
         ? (queryResult.rows as Array<{ simplevault_row_json: Record<string, unknown> | null }>).map(
-            (row) => row.simplevault_row_json ?? {}
-          )
+          (row) => row.simplevault_row_json ?? {}
+        )
         : [];
       const columns = rawRows.length > 0 ? Object.keys(rawRows[0]).map((name) => ({ name })) : [];
       const orderedColumnNames = columns.map((column) => column.name);
@@ -962,5 +950,5 @@ export function runDevServerWithWatch(options: DevServerWatchOptions): Promise<v
     console.error('Config watcher error:', err);
   });
 
-  return new Promise(() => {});
+  return new Promise(() => { });
 }

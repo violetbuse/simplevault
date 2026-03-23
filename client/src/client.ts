@@ -39,52 +39,35 @@ export interface ProxySubstituteResponse {
   body: string;
 }
 
+export type DbJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | DbJsonValue[]
+  | { [key: string]: DbJsonValue };
+
+export type DbQueryParam =
+  | { type: 'null'; value?: null }
+  | { type: 'bool' | 'boolean'; value: boolean }
+  | { type: 'int2' | 'smallint' | 'i16'; value: number }
+  | { type: 'int4' | 'int' | 'integer' | 'i32'; value: number }
+  | { type: 'int8' | 'bigint' | 'i64'; value: number }
+  | { type: 'float8' | 'float' | 'double' | 'f64'; value: number }
+  | { type: 'text' | 'varchar' | 'string'; value: string }
+  | { type: 'timestamptz' | 'timestamp with time zone'; value: string }
+  | { type: 'timestamp' | 'timestamp without time zone'; value: string }
+  | { type: 'date'; value: string }
+  | { type: 'time'; value: string }
+  | { type: 'uuid'; value: string }
+  | { type: 'bytea'; value: string }
+  | { type: 'json' | 'jsonb'; value: DbJsonValue };
+
 export interface DbQueryRequest {
   ciphertext: string;
   query: {
     sql: string;
-    params?: Array<
-      | string
-      | number
-      | boolean
-      | null
-      | Record<string, unknown>
-      | unknown[]
-      | {
-          param_type:
-            | 'null'
-            | 'bool'
-            | 'boolean'
-            | 'int'
-            | 'smallint'
-            | 'int2'
-            | 'i16'
-            | 'int4'
-            | 'integer'
-            | 'i32'
-            | 'bigint'
-            | 'int8'
-            | 'i64'
-            | 'float'
-            | 'float8'
-            | 'double'
-            | 'f64'
-            | 'text'
-            | 'varchar'
-            | 'string'
-            | 'timestamptz'
-            | 'timestamp with time zone'
-            | 'timestamp'
-            | 'timestamp without time zone'
-            | 'date'
-            | 'time'
-            | 'uuid'
-            | 'bytea'
-            | 'json'
-            | 'jsonb';
-          value?: unknown;
-        }
-    >;
+    params?: DbQueryParam[];
   };
   options?: {
     timeout_ms?: number;

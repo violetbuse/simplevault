@@ -309,7 +309,7 @@ struct DbQueryRequest {
 struct DbQueryPayload {
     sql: String,
     #[serde(default)]
-    params: Option<Vec<serde_json::Value>>,
+    params: Option<Vec<db_query::TypedQueryParam>>,
 }
 
 #[derive(Deserialize)]
@@ -2083,7 +2083,10 @@ mod tests {
                     "ciphertext": ciphertext,
                     "query": {
                         "sql": "select $1::int as n, $2::text as t",
-                        "params": [7, "ok"]
+                        "params": [
+                            { "type": "int4", "value": 7 },
+                            { "type": "text", "value": "ok" }
+                        ]
                     },
                     "options": {
                         "timeout_ms": 3000,
@@ -2232,8 +2235,8 @@ mod tests {
                     "query": {
                         "sql": "select $1::jsonb->>'kind' as kind, $2::varchar as label",
                         "params": [
-                            { "param_type": "jsonb", "value": { "kind": "customer" } },
-                            { "param_type": "varchar", "value": "gold" }
+                            { "type": "jsonb", "value": { "kind": "customer" } },
+                            { "type": "varchar", "value": "gold" }
                         ]
                     }
                 })
@@ -2297,7 +2300,7 @@ mod tests {
                     "query": {
                         "sql": "select ($1::timestamptz at time zone 'UTC')::text as ts",
                         "params": [
-                            { "param_type": "timestamptz", "value": "2025-01-02T03:04:05+00:00" }
+                            { "type": "timestamptz", "value": "2025-01-02T03:04:05+00:00" }
                         ]
                     }
                 })
@@ -2318,7 +2321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn db_query_supports_untyped_json_object_and_array_params_when_enabled() {
+    async fn db_query_supports_typed_json_object_and_array_params_when_enabled() {
         if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
             return;
         }
@@ -2365,8 +2368,8 @@ mod tests {
                     "query": {
                         "sql": "select $1::jsonb->>'kind' as kind, jsonb_array_length($2::jsonb) as n",
                         "params": [
-                            { "kind": "customer" },
-                            [1, 2, 3]
+                            { "type": "jsonb", "value": { "kind": "customer" } },
+                            { "type": "jsonb", "value": [1, 2, 3] }
                         ]
                     }
                 })

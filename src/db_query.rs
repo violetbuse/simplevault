@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -167,6 +167,39 @@ enum QueryParamOwned {
     Json(Json<Value>),
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum TypedQueryParam {
+    #[serde(rename = "null")]
+    Null,
+    #[serde(rename = "bool", alias = "boolean")]
+    Bool(bool),
+    #[serde(rename = "int2", alias = "smallint", alias = "i16")]
+    Int16(i16),
+    #[serde(rename = "int4", alias = "int", alias = "integer", alias = "i32")]
+    Int32(i32),
+    #[serde(rename = "int8", alias = "bigint", alias = "i64")]
+    Int(i64),
+    #[serde(rename = "float8", alias = "float", alias = "double", alias = "f64")]
+    Float(f64),
+    #[serde(rename = "text", alias = "varchar", alias = "string")]
+    Text(String),
+    #[serde(rename = "timestamptz", alias = "timestamp with time zone")]
+    TimestampTz(DateTime<FixedOffset>),
+    #[serde(rename = "timestamp", alias = "timestamp without time zone")]
+    Timestamp(NaiveDateTime),
+    #[serde(rename = "date")]
+    Date(String),
+    #[serde(rename = "time")]
+    Time(String),
+    #[serde(rename = "uuid")]
+    Uuid(String),
+    #[serde(rename = "bytea")]
+    Bytea(String),
+    #[serde(rename = "json", alias = "jsonb")]
+    Json(Value),
+}
+
 impl QueryParamOwned {
     fn as_tosql(&self) -> &(dyn ToSql + Sync) {
         match self {
@@ -201,192 +234,53 @@ fn decode_hex_param_value(value: &str) -> Result<Vec<u8>, anyhow::Error> {
 }
 
 fn parse_query_params(
-    values: &[Value],
+    values: &[TypedQueryParam],
     prefer_i32_for_small_ints: bool,
 ) -> Result<Vec<QueryParamOwned>, anyhow::Error> {
     let mut params = Vec::with_capacity(values.len());
     for value in values {
         match value {
-            Value::Null => params.push(QueryParamOwned::Null(None)),
-            Value::Bool(v) => params.push(QueryParamOwned::Bool(*v)),
-            Value::Number(v) => {
-                if let Some(i) = v.as_i64() {
-                    if prefer_i32_for_small_ints {
-                        if let Ok(i32_value) = i32::try_from(i) {
-                            params.push(QueryParamOwned::Int32(i32_value));
-                        } else {
-                            params.push(QueryParamOwned::Int(i));
-                        }
-                    } else {
-                        params.push(QueryParamOwned::Int(i));
-                    }
-                } else if let Some(f) = v.as_f64() {
-                    params.push(QueryParamOwned::Float(f));
+            TypedQueryParam::Null => params.push(QueryParamOwned::Null(None)),
+            TypedQueryParam::Bool(v) => params.push(QueryParamOwned::Bool(*v)),
+            TypedQueryParam::Int16(v) => params.push(QueryParamOwned::Int16(*v)),
+            TypedQueryParam::Int32(v) => {
+                if prefer_i32_for_small_ints {
+                    params.push(QueryParamOwned::Int32(*v));
                 } else {
-                    return Err(anyhow::anyhow!("unsupported numeric parameter value"));
+                    params.push(QueryParamOwned::Int(i64::from(*v)));
                 }
             }
-            Value::String(v) => params.push(QueryParamOwned::Text(v.clone())),
-            Value::Array(array_value) => {
-                params.push(QueryParamOwned::Json(Json(Value::Array(
-                    array_value.clone(),
-                ))));
+            TypedQueryParam::Int(v) => params.push(QueryParamOwned::Int(*v)),
+            TypedQueryParam::Float(v) => params.push(QueryParamOwned::Float(*v)),
+            TypedQueryParam::Text(v) => params.push(QueryParamOwned::Text(v.clone())),
+            TypedQueryParam::TimestampTz(v) => params.push(QueryParamOwned::TimestampTz(v.clone())),
+            TypedQueryParam::Timestamp(v) => params.push(QueryParamOwned::Timestamp(v.clone())),
+            TypedQueryParam::Date(v) => {
+                let value = NaiveDate::parse_from_str(v, "%Y-%m-%d").map_err(|error| {
+                    anyhow::anyhow!("typed param date must match YYYY-MM-DD: {}", error)
+                })?;
+                params.push(QueryParamOwned::Date(value));
             }
-            Value::Object(map) => {
-                let strict_typed_shape = map.len() == 2
-                    && map.contains_key("param_type")
-                    && map.contains_key("value")
-                    && map.get("param_type").is_some_and(Value::is_string);
-                if strict_typed_shape {
-                    let type_name = map
-                        .get("param_type")
-                        .and_then(Value::as_str)
-                        .map(|value| value.trim().to_ascii_lowercase())
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "object params must use typed form: {{\"param_type\":\"...\",\"value\":...}}"
-                            )
-                        })?;
-                    let typed_value = map.get("value").cloned().unwrap_or(Value::Null);
-                    let parsed = match type_name.as_str() {
-                        "null" => QueryParamOwned::Null(None),
-                        "bool" | "boolean" => {
-                            let value = typed_value.as_bool().ok_or_else(|| {
-                                anyhow::anyhow!("typed param bool requires a boolean value")
-                            })?;
-                            QueryParamOwned::Bool(value)
-                        }
-                        "smallint" | "int2" | "i16" => {
-                            let value = typed_value.as_i64().ok_or_else(|| {
-                                anyhow::anyhow!("typed param int2 requires an integer value")
-                            })?;
-                            let value = i16::try_from(value).map_err(|_| {
-                                anyhow::anyhow!(
-                                    "typed param int2 is out of range for 16-bit integer"
-                                )
-                            })?;
-                            QueryParamOwned::Int16(value)
-                        }
-                        "int" | "int4" | "integer" | "i32" => {
-                            let value = typed_value.as_i64().ok_or_else(|| {
-                                anyhow::anyhow!("typed param int4 requires an integer value")
-                            })?;
-                            let value = i32::try_from(value).map_err(|_| {
-                                anyhow::anyhow!(
-                                    "typed param int4 is out of range for 32-bit integer"
-                                )
-                            })?;
-                            QueryParamOwned::Int32(value)
-                        }
-                        "bigint" | "int8" | "i64" => {
-                            let value = typed_value.as_i64().ok_or_else(|| {
-                                anyhow::anyhow!("typed param int8 requires an integer value")
-                            })?;
-                            QueryParamOwned::Int(value)
-                        }
-                        "float" | "float8" | "double" | "f64" => {
-                            let value = typed_value.as_f64().ok_or_else(|| {
-                                anyhow::anyhow!("typed param float8 requires a numeric value")
-                            })?;
-                            QueryParamOwned::Float(value)
-                        }
-                        "text" | "varchar" | "string" => {
-                            let value = typed_value.as_str().ok_or_else(|| {
-                                anyhow::anyhow!("typed param text/varchar requires a string value")
-                            })?;
-                            QueryParamOwned::Text(value.to_string())
-                        }
-                        "timestamptz" | "timestamp with time zone" => {
-                            let value = typed_value.as_str().ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "typed param timestamptz requires an RFC3339 string value"
-                                )
-                            })?;
-                            let value = DateTime::parse_from_rfc3339(value).map_err(|error| {
-                                anyhow::anyhow!(
-                                    "typed param timestamptz must be RFC3339: {}",
-                                    error
-                                )
-                            })?;
-                            QueryParamOwned::TimestampTz(value)
-                        }
-                        "timestamp" | "timestamp without time zone" => {
-                            let value = typed_value.as_str().ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "typed param timestamp requires a YYYY-MM-DD HH:MM:SS string value"
-                                )
-                            })?;
-                            let value = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
-                                .map_err(|error| {
-                                anyhow::anyhow!(
-                                    "typed param timestamp must match YYYY-MM-DD HH:MM:SS: {}",
-                                    error
-                                )
-                            })?;
-                            QueryParamOwned::Timestamp(value)
-                        }
-                        "date" => {
-                            let value = typed_value.as_str().ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "typed param date requires a YYYY-MM-DD string value"
-                                )
-                            })?;
-                            let value =
-                                NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|error| {
-                                    anyhow::anyhow!(
-                                        "typed param date must match YYYY-MM-DD: {}",
-                                        error
-                                    )
-                                })?;
-                            QueryParamOwned::Date(value)
-                        }
-                        "time" => {
-                            let value = typed_value.as_str().ok_or_else(|| {
-                                anyhow::anyhow!("typed param time requires a HH:MM:SS string value")
-                            })?;
-                            let value =
-                                NaiveTime::parse_from_str(value, "%H:%M:%S").map_err(|error| {
-                                    anyhow::anyhow!(
-                                        "typed param time must match HH:MM:SS: {}",
-                                        error
-                                    )
-                                })?;
-                            QueryParamOwned::Time(value)
-                        }
-                        "uuid" => {
-                            let value = typed_value.as_str().ok_or_else(|| {
-                                anyhow::anyhow!("typed param uuid requires a UUID string value")
-                            })?;
-                            let value = Uuid::parse_str(value).map_err(|error| {
-                                anyhow::anyhow!("typed param uuid must be valid UUID: {}", error)
-                            })?;
-                            QueryParamOwned::Uuid(value)
-                        }
-                        "bytea" => {
-                            let value = typed_value.as_str().ok_or_else(|| {
-                                anyhow::anyhow!("typed param bytea requires a hex string value")
-                            })?;
-                            let decoded = decode_hex_param_value(value).map_err(|error| {
-                                anyhow::anyhow!(
-                                    "typed param bytea must be hex string (optionally prefixed with \\x): {}",
-                                    error
-                                )
-                            })?;
-                            QueryParamOwned::Bytea(decoded)
-                        }
-                        "json" | "jsonb" => QueryParamOwned::Json(Json(typed_value)),
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "unsupported typed param type: {}",
-                                type_name
-                            ));
-                        }
-                    };
-                    params.push(parsed);
-                } else {
-                    params.push(QueryParamOwned::Json(Json(Value::Object(map.clone()))));
-                }
+            TypedQueryParam::Time(v) => {
+                let value = NaiveTime::parse_from_str(v, "%H:%M:%S")
+                    .map_err(|error| anyhow::anyhow!("typed param time must match HH:MM:SS: {}", error))?;
+                params.push(QueryParamOwned::Time(value));
             }
+            TypedQueryParam::Uuid(v) => {
+                let value = Uuid::parse_str(v)
+                    .map_err(|error| anyhow::anyhow!("typed param uuid must be valid UUID: {}", error))?;
+                params.push(QueryParamOwned::Uuid(value));
+            }
+            TypedQueryParam::Bytea(v) => {
+                let decoded = decode_hex_param_value(v).map_err(|error| {
+                    anyhow::anyhow!(
+                        "typed param bytea must be hex string (optionally prefixed with \\x): {}",
+                        error
+                    )
+                })?;
+                params.push(QueryParamOwned::Bytea(decoded));
+            }
+            TypedQueryParam::Json(v) => params.push(QueryParamOwned::Json(Json(v.clone()))),
         }
     }
     Ok(params)
@@ -409,7 +303,7 @@ fn format_parameter_serialization_error(error: &tokio_postgres::Error) -> Option
 async fn run_prepared_query(
     client: &deadpool_postgres::Client,
     wrapped_sql: &str,
-    params: &[Value],
+    params: &[TypedQueryParam],
     timeout_ms: u64,
     prefer_i32_for_small_ints: bool,
 ) -> Result<Vec<tokio_postgres::Row>, anyhow::Error> {
@@ -494,7 +388,7 @@ fn format_pg_query_error(error: tokio_postgres::Error) -> anyhow::Error {
 pub async fn run_query(
     pool: &Pool,
     sql: &str,
-    params: &[Value],
+    params: &[TypedQueryParam],
     timeout_ms: u64,
     max_rows: usize,
 ) -> Result<DbQueryResult, anyhow::Error> {
@@ -515,24 +409,26 @@ pub async fn run_query(
             trimmed_sql
         );
 
-        let db_rows = match run_prepared_query(&client, wrapped_sql.as_str(), params, timeout_ms, true)
-            .await
-        {
-            Ok(rows) => rows,
-            Err(error) => {
-                let message = error.to_string().to_ascii_lowercase();
-                if message.contains("error serializing parameter") {
-                    run_prepared_query(&client, wrapped_sql.as_str(), params, timeout_ms, false).await?
-                } else {
-                    return Err(error);
+        let db_rows =
+            match run_prepared_query(&client, wrapped_sql.as_str(), params, timeout_ms, true).await
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    let message = error.to_string().to_ascii_lowercase();
+                    if message.contains("error serializing parameter") {
+                        run_prepared_query(&client, wrapped_sql.as_str(), params, timeout_ms, false)
+                            .await?
+                    } else {
+                        return Err(error);
+                    }
                 }
-            }
-        };
+            };
         let mut rows_json = Vec::with_capacity(db_rows.len());
         for row in db_rows {
-            let Json(value): Json<Value> = row.try_get("simplevault_row_json").map_err(|error| {
-                anyhow::anyhow!("failed to deserialize query result row: {}", error)
-            })?;
+            let Json(value): Json<Value> =
+                row.try_get("simplevault_row_json").map_err(|error| {
+                    anyhow::anyhow!("failed to deserialize query result row: {}", error)
+                })?;
             rows_json.push(value);
         }
 
@@ -601,7 +497,7 @@ pub fn sanitize_connection_string(connection_string: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{from_value, json};
 
     #[test]
     fn connection_string_hash_is_stable() {
@@ -629,14 +525,14 @@ mod tests {
     #[test]
     fn parse_query_params_supports_common_typed_aliases() {
         let params = vec![
-            json!({"param_type":"int2","value":7}),
-            json!({"param_type":"smallint","value":8}),
-            json!({"param_type":"timestamptz","value":"2025-01-01T12:30:45+00:00"}),
-            json!({"param_type":"uuid","value":"123e4567-e89b-12d3-a456-426614174000"}),
-            json!({"param_type":"date","value":"2025-01-01"}),
-            json!({"param_type":"time","value":"12:30:45"}),
-            json!({"param_type":"bytea","value":"\\x68656c6c6f"}),
-            json!({"param_type":"jsonb","value":{"kind":"customer"}}),
+            from_value(json!({"type":"int2","value":7})).unwrap(),
+            from_value(json!({"type":"smallint","value":8})).unwrap(),
+            from_value(json!({"type":"timestamptz","value":"2025-01-01T12:30:45+00:00"})).unwrap(),
+            from_value(json!({"type":"uuid","value":"123e4567-e89b-12d3-a456-426614174000"})).unwrap(),
+            from_value(json!({"type":"date","value":"2025-01-01"})).unwrap(),
+            from_value(json!({"type":"time","value":"12:30:45"})).unwrap(),
+            from_value(json!({"type":"bytea","value":"\\x68656c6c6f"})).unwrap(),
+            from_value(json!({"type":"jsonb","value":{"kind":"customer"}})).unwrap(),
         ];
         let parsed = parse_query_params(params.as_slice(), true).unwrap();
         assert_eq!(parsed.len(), 8);
@@ -644,8 +540,7 @@ mod tests {
 
     #[test]
     fn parse_query_params_rejects_invalid_timestamptz() {
-        let params = vec![json!({"param_type":"timestamptz","value":"not-a-timestamp"})];
-        let error = parse_query_params(params.as_slice(), true).unwrap_err();
-        assert!(error.to_string().contains("RFC3339"));
+        let error = from_value::<TypedQueryParam>(json!({"type":"timestamptz","value":"not-a-timestamp"})).unwrap_err();
+        assert!(!error.to_string().is_empty());
     }
 }

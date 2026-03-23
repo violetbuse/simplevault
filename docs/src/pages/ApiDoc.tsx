@@ -179,7 +179,7 @@ export default function ApiDoc() {
   "ciphertext": "v1:...",
   "query": {
     "sql": "select id, email from users where id = $1",
-    "params": [123]
+    "params": [{ "type": "int4", "value": 123 }]
   },
   "options": {
     "timeout_ms": 5000,
@@ -187,19 +187,22 @@ export default function ApiDoc() {
   }
 }`}</pre>
               <p className="text-[var(--text-muted)] text-sm mb-4">
-                Params support primitive values (<code className="bg-black/30 px-1 rounded">null</code>, <code className="bg-black/30 px-1 rounded">boolean</code>, <code className="bg-black/30 px-1 rounded">number</code>, <code className="bg-black/30 px-1 rounded">string</code>) and typed objects for explicit binding:
+                Params must use typed objects for explicit binding:
               </p>
               <pre className="bg-black/30 rounded p-4 text-sm font-mono mb-4">{`{
   "query": {
     "sql": "select $1::jsonb->>'kind' as kind, $2::varchar as label",
     "params": [
-      { "param_type": "jsonb", "value": { "kind": "customer" } },
-      { "param_type": "varchar", "value": "gold" }
+      { "type": "jsonb", "value": { "kind": "customer" } },
+      { "type": "varchar", "value": "gold" }
     ]
   }
 }`}</pre>
               <p className="text-[var(--text-muted)] text-sm mb-4">
-                Plain JSON objects/arrays are also accepted as JSON params (for example <code className="bg-black/30 px-1 rounded">{`{"kind":"customer"}`}</code> or <code className="bg-black/30 px-1 rounded">[1,2,3]</code>). Only objects that exactly match <code className="bg-black/30 px-1 rounded">{`{"param_type":"...","value":...}`}</code> use typed binding mode.
+                Every parameter object must match <code className="bg-black/30 px-1 rounded">{`{"type":"...","value":...}`}</code>.
+              </p>
+              <p className="text-[var(--text-muted)] text-sm mb-4">
+                To send SQL <code className="bg-black/30 px-1 rounded">NULL</code>, use <code className="bg-black/30 px-1 rounded">{`{"type":"null","value":null}`}</code>.
               </p>
               <p className="text-[var(--text-muted)] text-sm mb-4">
                 Common typed aliases include <code className="bg-black/30 px-1 rounded">bool</code>, <code className="bg-black/30 px-1 rounded">int2</code>, <code className="bg-black/30 px-1 rounded">int4</code>, <code className="bg-black/30 px-1 rounded">int8</code>, <code className="bg-black/30 px-1 rounded">float8</code>, <code className="bg-black/30 px-1 rounded">text</code>, <code className="bg-black/30 px-1 rounded">varchar</code>, <code className="bg-black/30 px-1 rounded">timestamptz</code>, <code className="bg-black/30 px-1 rounded">timestamp</code>, <code className="bg-black/30 px-1 rounded">date</code>, <code className="bg-black/30 px-1 rounded">time</code>, <code className="bg-black/30 px-1 rounded">uuid</code>, <code className="bg-black/30 px-1 rounded">bytea</code>, <code className="bg-black/30 px-1 rounded">json</code>, and <code className="bg-black/30 px-1 rounded">jsonb</code>. For <code className="bg-black/30 px-1 rounded">timestamptz</code>, pass an RFC3339 string.

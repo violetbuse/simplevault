@@ -1,6 +1,6 @@
 {
   "name": "simplevault",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Client library and dev server for SimpleVault encryption API",
   "type": "module",
   "main": "./dist/index.js",

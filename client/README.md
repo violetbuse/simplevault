@@ -29,6 +29,19 @@ const { ciphertext: rotated } = await client.rotate('vault', ciphertext);
 
 // Get latest key version
 const { version } = await client.getVersion('vault');
+
+// DB query typed params (including SQL NULL)
+const result = await client.dbQuery('vault', {
+  ciphertext,
+  query: {
+    sql: 'select $1::int as n, $2::text as label, $3::text is null as is_null',
+    params: [
+      { type: 'int4', value: 123 },
+      { type: 'text', value: 'gold' },
+      { type: 'null', value: null },
+    ],
+  },
+});
 ```
 
 ## CLI
