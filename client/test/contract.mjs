@@ -616,6 +616,124 @@ describe("SimpleVault API contract", () => {
       assert.strictEqual(result.data?.rows?.[0]?.[1], "ok");
     });
 
+    it("binds typed null parameters for any column type when DB tests enabled", async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request("POST", "/v1/vault/encrypt", {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, "encrypt should succeed");
+
+      const result = await request("POST", "/v1/vault/db-query", {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: "select ($1::int) is null as n_null, ($2::text) is null as t_null, $3::int as present",
+          params: [
+            { type: "null", value: null },
+            { type: "null", value: null },
+            { type: "int4", value: 5 },
+          ],
+        },
+        options: {
+          timeout_ms: 3000,
+          max_rows: 100,
+        },
+      });
+      assert.strictEqual(
+        result.status,
+        200,
+        `Expected 200, got ${result.status}: ${result.text}`,
+      );
+      assert.strictEqual(result.data?.row_count, 1);
+      assert.strictEqual(result.data?.rows?.[0]?.[0], true);
+      assert.strictEqual(result.data?.rows?.[0]?.[1], true);
+      assert.strictEqual(result.data?.rows?.[0]?.[2], 5);
+    });
+
+    it("inserts null into nullable columns via bound parameters when DB tests enabled", async () => {
+      if (!ENABLE_DB_TESTS) {
+        return;
+      }
+
+      const encrypted = await request("POST", "/v1/vault/encrypt", {
+        plaintext: TEST_DB_URL,
+      });
+      assert.strictEqual(encrypted.status, 200, "encrypt should succeed");
+
+      const tableName = `svnb_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+
+      const create = await request("POST", "/v1/vault/db-query", {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: `create table ${tableName} (id int primary key, n int null, t text null)`,
+        },
+        options: { timeout_ms: 3000, max_rows: 100 },
+      });
+      assert.strictEqual(
+        create.status,
+        200,
+        `create table: ${create.status} ${create.text}`,
+      );
+
+      const insertNulls = await request("POST", "/v1/vault/db-query", {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: `insert into ${tableName} (id, n, t) values (1, $1, $2)`,
+          params: [
+            { type: "null", value: null },
+            { type: "null", value: null },
+          ],
+        },
+        options: { timeout_ms: 3000, max_rows: 100 },
+      });
+      assert.strictEqual(
+        insertNulls.status,
+        200,
+        `insert nulls: ${insertNulls.status} ${insertNulls.text}`,
+      );
+
+      const select1 = await request("POST", "/v1/vault/db-query", {
+        ciphertext: encrypted.data.ciphertext,
+        query: { sql: `select n, t from ${tableName} where id = 1` },
+        options: { timeout_ms: 3000, max_rows: 100 },
+      });
+      assert.strictEqual(select1.status, 200, select1.text);
+      assert.strictEqual(select1.data?.row_count, 1);
+      assert.strictEqual(select1.data?.rows?.[0]?.[0], null);
+      assert.strictEqual(select1.data?.rows?.[0]?.[1], null);
+
+      const insertMixed = await request("POST", "/v1/vault/db-query", {
+        ciphertext: encrypted.data.ciphertext,
+        query: {
+          sql: `insert into ${tableName} (id, n, t) values (2, $1, $2)`,
+          params: [
+            { type: "int4", value: 42 },
+            { type: "null", value: null },
+          ],
+        },
+        options: { timeout_ms: 3000, max_rows: 100 },
+      });
+      assert.strictEqual(insertMixed.status, 200, insertMixed.text);
+
+      const select2 = await request("POST", "/v1/vault/db-query", {
+        ciphertext: encrypted.data.ciphertext,
+        query: { sql: `select n, t from ${tableName} where id = 2` },
+        options: { timeout_ms: 3000, max_rows: 100 },
+      });
+      assert.strictEqual(select2.status, 200, select2.text);
+      assert.strictEqual(select2.data?.rows?.[0]?.[0], 42);
+      assert.strictEqual(select2.data?.rows?.[0]?.[1], null);
+
+      const drop = await request("POST", "/v1/vault/db-query", {
+        ciphertext: encrypted.data.ciphertext,
+        query: { sql: `drop table ${tableName}` },
+        options: { timeout_ms: 3000, max_rows: 100 },
+      });
+      assert.strictEqual(drop.status, 200, drop.text);
+    });
+
     it("returns 403 when DB destination is not allowed", async () => {
       const encrypted = await request("POST", "/v1/vault/encrypt", {
         plaintext: "postgres://user:pass@db-not-allowed.internal:5432/app",

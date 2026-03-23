@@ -2449,6 +2449,299 @@ mod tests {
         assert_eq!(query_json["rows"][0][2].as_i64().unwrap(), 3);
     }
 
+    #[tokio::test]
+    async fn db_query_binds_null_params_in_select_when_enabled() {
+        if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
+            return;
+        }
+        let connection_string = std::env::var("SIMPLEVAULT_TEST_DB_URL").unwrap_or_else(|_| {
+            "postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test".to_string()
+        });
+        let targets = crate::db_query::parse_connection_targets(&connection_string).unwrap();
+        let (allowed_host, allowed_port) = targets.first().cloned().unwrap();
+        let config_json = format!(
+            r#"{{
+            "api_keys": [{{ "value": "db-query-key", "keys": "all", "operations": ["encrypt", "db_query"] }}],
+            "server_port": 8080,
+            "keys": {{
+                "vault": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "db_destinations": {{
+                "vault": [{{ "host": "{}", "port": {} }}]
+            }}
+        }}"#,
+            allowed_host, allowed_port
+        );
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let app = build_router(config);
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({ "plaintext": connection_string }).to_string(),
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let encrypt_body = read_body(encrypt_resp).await;
+        let encrypt_json: serde_json::Value = serde_json::from_slice(&encrypt_body).unwrap();
+        let ciphertext = encrypt_json["ciphertext"].as_str().unwrap().to_string();
+
+        let query_req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "query": {
+                        "sql": "select ($1::int) is null as n_null, ($2::text) is null as t_null, $3::int as present",
+                        "params": [
+                            { "type": "null", "value": null },
+                            { "type": "null", "value": null },
+                            { "type": "int4", "value": 5 }
+                        ]
+                    },
+                    "options": {
+                        "timeout_ms": 3000,
+                        "max_rows": 100
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let query_resp = app.oneshot(query_req).await.unwrap();
+        let query_status = query_resp.status();
+        let query_body = read_body(query_resp).await;
+        assert_eq!(
+            query_status,
+            StatusCode::OK,
+            "db-query should bind NULL params; body={}",
+            String::from_utf8_lossy(&query_body)
+        );
+        let query_json: serde_json::Value = serde_json::from_slice(&query_body).unwrap();
+        assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
+        assert_eq!(query_json["rows"][0][0].as_bool(), Some(true));
+        assert_eq!(query_json["rows"][0][1].as_bool(), Some(true));
+        assert_eq!(query_json["rows"][0][2].as_i64(), Some(5));
+    }
+
+    #[tokio::test]
+    async fn db_query_inserts_null_into_nullable_columns_when_enabled() {
+        if std::env::var("SIMPLEVAULT_ENABLE_DB_TESTS").unwrap_or_default() != "1" {
+            return;
+        }
+        let connection_string = std::env::var("SIMPLEVAULT_TEST_DB_URL").unwrap_or_else(|_| {
+            "postgres://simplevault:simplevault@127.0.0.1:55432/simplevault_test".to_string()
+        });
+        let targets = crate::db_query::parse_connection_targets(&connection_string).unwrap();
+        let (allowed_host, allowed_port) = targets.first().cloned().unwrap();
+        let config_json = format!(
+            r#"{{
+            "api_keys": [{{ "value": "db-query-key", "keys": "all", "operations": ["encrypt", "db_query"] }}],
+            "server_port": 8080,
+            "keys": {{
+                "vault": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "db_destinations": {{
+                "vault": [{{ "host": "{}", "port": {} }}]
+            }}
+        }}"#,
+            allowed_host, allowed_port
+        );
+        let config: Config = serde_json::from_str(&config_json).unwrap();
+        let app = build_router(config);
+
+        let encrypt_req = Request::post("/v1/vault/encrypt")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({ "plaintext": connection_string }).to_string(),
+            ))
+            .unwrap();
+        let encrypt_resp = app.clone().oneshot(encrypt_req).await.unwrap();
+        assert_eq!(encrypt_resp.status(), StatusCode::OK);
+        let encrypt_body = read_body(encrypt_resp).await;
+        let encrypt_json: serde_json::Value = serde_json::from_slice(&encrypt_body).unwrap();
+        let ciphertext = encrypt_json["ciphertext"].as_str().unwrap().to_string();
+
+        let table = format!(
+            "svnb_{}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            rand::random::<u32>()
+        );
+
+        let create_sql = format!(
+            "create table {} (id int primary key, n int null, t text null)",
+            table
+        );
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": &ciphertext,
+                    "query": { "sql": create_sql },
+                    "options": { "timeout_ms": 3000, "max_rows": 100 }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let st = resp.status();
+        let body = read_body(resp).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "create table; body={}",
+            String::from_utf8_lossy(&body)
+        );
+
+        let insert_both_null = format!(
+            "insert into {} (id, n, t) values (1, $1, $2)",
+            table
+        );
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": &ciphertext,
+                    "query": {
+                        "sql": insert_both_null,
+                        "params": [
+                            { "type": "null", "value": null },
+                            { "type": "null", "value": null }
+                        ]
+                    },
+                    "options": { "timeout_ms": 3000, "max_rows": 100 }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let st = resp.status();
+        let body = read_body(resp).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "insert nulls; body={}",
+            String::from_utf8_lossy(&body)
+        );
+
+        let select_row1 = format!("select n, t from {} where id = 1", table);
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": &ciphertext,
+                    "query": { "sql": select_row1 },
+                    "options": { "timeout_ms": 3000, "max_rows": 100 }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let st = resp.status();
+        let body = read_body(resp).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "select after null insert; body={}",
+            String::from_utf8_lossy(&body)
+        );
+        let query_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
+        assert!(query_json["rows"][0][0].is_null());
+        assert!(query_json["rows"][0][1].is_null());
+
+        let insert_mixed = format!(
+            "insert into {} (id, n, t) values (2, $1, $2)",
+            table
+        );
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": &ciphertext,
+                    "query": {
+                        "sql": insert_mixed,
+                        "params": [
+                            { "type": "int4", "value": 42 },
+                            { "type": "null", "value": null }
+                        ]
+                    },
+                    "options": { "timeout_ms": 3000, "max_rows": 100 }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let st = resp.status();
+        let body = read_body(resp).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "insert mixed null; body={}",
+            String::from_utf8_lossy(&body)
+        );
+
+        let select_row2 = format!("select n, t from {} where id = 2", table);
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": &ciphertext,
+                    "query": { "sql": select_row2 },
+                    "options": { "timeout_ms": 3000, "max_rows": 100 }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let st = resp.status();
+        let body = read_body(resp).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "select after mixed insert; body={}",
+            String::from_utf8_lossy(&body)
+        );
+        let query_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
+        assert_eq!(query_json["rows"][0][0].as_i64(), Some(42));
+        assert!(query_json["rows"][0][1].is_null());
+
+        let drop_sql = format!("drop table {}", table);
+        let req = Request::post("/v1/vault/db-query")
+            .header("content-type", "application/json")
+            .header("x-api-key", "db-query-key")
+            .body(Body::from(
+                json!({
+                    "ciphertext": &ciphertext,
+                    "query": { "sql": drop_sql },
+                    "options": { "timeout_ms": 3000, "max_rows": 100 }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let st = resp.status();
+        let body = read_body(resp).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "drop table; body={}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
     // --- Routing tests ---
 
     #[tokio::test]

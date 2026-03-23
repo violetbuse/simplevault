@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,7 +14,8 @@ use tokio::time::timeout;
 use tokio_postgres::NoTls;
 use tokio_postgres::config::Host;
 use tokio_postgres::error::DbError;
-use tokio_postgres::types::{Json, ToSql};
+use bytes::BytesMut;
+use tokio_postgres::types::{Format, IsNull, Json, ToSql, Type};
 use uuid::Uuid;
 use zeroize::Zeroize;
 
@@ -149,9 +152,48 @@ pub fn parse_connection_targets(
     Ok(output)
 }
 
+/// SQL `NULL` bound as a parameter. Uses an untyped `ToSql` so it is accepted for any Postgres
+/// column type (`Option<String>::None` only accepts text-like types and fails for e.g. `int4`).
+#[derive(Clone, Copy)]
+struct UntypedSqlNull;
+
+impl fmt::Debug for UntypedSqlNull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("NULL")
+    }
+}
+
+const UNTYPED_SQL_NULL: UntypedSqlNull = UntypedSqlNull;
+
+impl ToSql for UntypedSqlNull {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        _out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        Ok(IsNull::Yes)
+    }
+
+    fn accepts(_ty: &Type) -> bool {
+        true
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        self.to_sql(ty, out)
+    }
+
+    fn encode_format(&self, _ty: &Type) -> Format {
+        Format::Binary
+    }
+}
+
 #[derive(Debug)]
 enum QueryParamOwned {
-    Null(Option<String>),
+    Null,
     Bool(bool),
     Int16(i16),
     Int32(i32),
@@ -203,7 +245,7 @@ pub enum TypedQueryParam {
 impl QueryParamOwned {
     fn as_tosql(&self) -> &(dyn ToSql + Sync) {
         match self {
-            QueryParamOwned::Null(value) => value,
+            QueryParamOwned::Null => &UNTYPED_SQL_NULL,
             QueryParamOwned::Bool(value) => value,
             QueryParamOwned::Int16(value) => value,
             QueryParamOwned::Int32(value) => value,
@@ -240,7 +282,7 @@ fn parse_query_params(
     let mut params = Vec::with_capacity(values.len());
     for value in values {
         match value {
-            TypedQueryParam::Null => params.push(QueryParamOwned::Null(None)),
+            TypedQueryParam::Null => params.push(QueryParamOwned::Null),
             TypedQueryParam::Bool(v) => params.push(QueryParamOwned::Bool(*v)),
             TypedQueryParam::Int16(v) => params.push(QueryParamOwned::Int16(*v)),
             TypedQueryParam::Int32(v) => {

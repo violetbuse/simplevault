@@ -1,6 +1,6 @@
 [package]
 name = "simplevault"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2024"
 
 [dependencies]
@@ -8,6 +8,7 @@ aes-gcm = "0.10"
 base64 = "0.22"
 form_urlencoded = "1.2"
 anyhow = "1.0.102"
+bytes = "1"
 clap = { version = "4.4", features = ["derive"] }
 axum = "0.8.8"
 hex = "0.4.3"
