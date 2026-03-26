@@ -1,11 +1,12 @@
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 #[cfg(any(test, feature = "test-utils"))]
 use serde_json::json;
-use serde_json::Value;
 
 #[cfg(any(test, feature = "test-utils"))]
 use crate::config::Config;
@@ -13,17 +14,28 @@ use crate::crypto::CipherText;
 use crate::db_query::{DbQueryResult, TypedQueryParam};
 use crate::proxy_substitute::{OutboundRequest, ProxySubstituteResponse};
 
-#[derive(Debug, Clone)]
-pub struct SimpleVaultClient<T: SimpleVaultTransport> {
+#[derive(Clone)]
+pub struct SimpleVaultClient {
     key_name: String,
-    transport: T,
+    transport: Arc<dyn SimpleVaultTransport>,
 }
 
-impl<T: SimpleVaultTransport> SimpleVaultClient<T> {
-    pub fn new(key_name: impl Into<String>, transport: T) -> Self {
+impl std::fmt::Debug for SimpleVaultClient {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimpleVaultClient")
+            .field("key_name", &self.key_name)
+            .finish()
+    }
+}
+
+impl SimpleVaultClient {
+    pub fn new<T>(key_name: impl Into<String>, transport: T) -> Self
+    where
+        T: SimpleVaultTransport,
+    {
         Self {
             key_name: key_name.into(),
-            transport,
+            transport: Arc::new(transport),
         }
     }
 
@@ -31,27 +43,26 @@ impl<T: SimpleVaultTransport> SimpleVaultClient<T> {
         &self.key_name
     }
 
-    pub async fn encrypt(&self, plaintext: impl Into<String>) -> Result<CipherTextObject, ClientError> {
-        self.transport
-            .post_json(
-                &self.key_name,
-                "encrypt",
-                EncryptRequest {
-                    plaintext: plaintext.into(),
-                },
-            )
-            .await
+    pub async fn encrypt(
+        &self,
+        plaintext: impl Into<String>,
+    ) -> Result<CipherTextObject, ClientError> {
+        self.post_json(
+            "encrypt",
+            EncryptRequest {
+                plaintext: plaintext.into(),
+            },
+        )
+        .await
     }
 
     pub async fn decrypt(&self, ciphertext: CipherText) -> Result<PlainTextObject, ClientError> {
-        self.transport
-            .post_json(&self.key_name, "decrypt", CipherTextObject { ciphertext })
+        self.post_json("decrypt", CipherTextObject { ciphertext })
             .await
     }
 
     pub async fn rotate(&self, ciphertext: CipherText) -> Result<CipherTextObject, ClientError> {
-        self.transport
-            .post_json(&self.key_name, "rotate", CipherTextObject { ciphertext })
+        self.post_json("rotate", CipherTextObject { ciphertext })
             .await
     }
 
@@ -59,41 +70,57 @@ impl<T: SimpleVaultTransport> SimpleVaultClient<T> {
         &self,
         request: CreateSignatureRequest,
     ) -> Result<CreateSignatureResponse, ClientError> {
-        self.transport
-            .post_json(&self.key_name, "create-signature", request)
-            .await
+        self.post_json("create-signature", request).await
     }
 
     pub async fn verify_signature(
         &self,
         request: VerifySignatureRequest,
     ) -> Result<VerifySignatureResponse, ClientError> {
-        self.transport
-            .post_json(&self.key_name, "verify-signature", request)
-            .await
+        self.post_json("verify-signature", request).await
     }
 
     pub async fn proxy_substitute(
         &self,
         request: ProxySubstituteRequest,
     ) -> Result<ProxySubstituteResponse, ClientError> {
-        self.transport
-            .post_json(&self.key_name, "proxy-substitute", request)
-            .await
+        self.post_json("proxy-substitute", request).await
     }
 
     pub async fn db_query(&self, request: DbQueryRequest) -> Result<DbQueryResult, ClientError> {
-        self.transport
-            .post_json(&self.key_name, "db-query", request)
-            .await
+        self.post_json("db-query", request).await
     }
 
     pub async fn version(&self) -> Result<VersionResponse, ClientError> {
-        self.transport.get_json(&self.key_name, "version").await
+        self.get_json("version").await
+    }
+
+    async fn post_json<B, R>(&self, endpoint: &str, body: B) -> Result<R, ClientError>
+    where
+        B: Serialize,
+        R: for<'de> Deserialize<'de>,
+    {
+        let body = serde_json::to_value(body).map_err(ClientError::Serialize)?;
+        let value = self
+            .transport
+            .send_json(HttpMethod::Post, &self.key_name, endpoint, Some(body))
+            .await?;
+        serde_json::from_value(value).map_err(ClientError::Deserialize)
+    }
+
+    async fn get_json<R>(&self, endpoint: &str) -> Result<R, ClientError>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        let value = self
+            .transport
+            .send_json(HttpMethod::Get, &self.key_name, endpoint, None)
+            .await?;
+        serde_json::from_value(value).map_err(ClientError::Deserialize)
     }
 }
 
-impl SimpleVaultClient<HttpTransport> {
+impl SimpleVaultClient {
     pub fn with_http_transport(
         key_name: impl Into<String>,
         base_url: impl Into<String>,
@@ -104,7 +131,7 @@ impl SimpleVaultClient<HttpTransport> {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-impl SimpleVaultClient<InMemoryTransport> {
+impl SimpleVaultClient {
     pub fn with_test_transport(config: Option<Value>) -> Result<Self, ClientError> {
         let config_value = config.unwrap_or_else(default_permissive_test_config);
         let parsed_config: Config =
@@ -116,37 +143,14 @@ impl SimpleVaultClient<InMemoryTransport> {
 }
 
 #[async_trait]
-pub trait SimpleVaultTransport: Clone + Send + Sync + 'static {
-    async fn send_json<B>(
+pub trait SimpleVaultTransport: Send + Sync + 'static {
+    async fn send_json(
         &self,
         method: HttpMethod,
         key_name: &str,
         endpoint: &str,
-        body: Option<&B>,
-    ) -> Result<Value, ClientError>
-    where
-        B: Serialize + Send + Sync;
-
-    async fn post_json<B, R>(&self, key_name: &str, endpoint: &str, body: B) -> Result<R, ClientError>
-    where
-        B: Serialize + Send + Sync,
-        R: for<'de> Deserialize<'de> + Send,
-    {
-        let value = self
-            .send_json(HttpMethod::Post, key_name, endpoint, Some(&body))
-            .await?;
-        serde_json::from_value(value).map_err(ClientError::Deserialize)
-    }
-
-    async fn get_json<R>(&self, key_name: &str, endpoint: &str) -> Result<R, ClientError>
-    where
-        R: for<'de> Deserialize<'de> + Send,
-    {
-        let value = self
-            .send_json::<serde_json::Value>(HttpMethod::Get, key_name, endpoint, None)
-            .await?;
-        serde_json::from_value(value).map_err(ClientError::Deserialize)
-    }
+        body: Option<Value>,
+    ) -> Result<Value, ClientError>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -173,7 +177,9 @@ impl Display for ClientError {
         match self {
             ClientError::Transport(message) => write!(f, "transport error: {}", message),
             ClientError::Serialize(error) => write!(f, "request serialization error: {}", error),
-            ClientError::Deserialize(error) => write!(f, "response deserialization error: {}", error),
+            ClientError::Deserialize(error) => {
+                write!(f, "response deserialization error: {}", error)
+            }
             ClientError::InvalidConfig(error) => write!(f, "invalid test config: {}", error),
             ClientError::HttpStatus {
                 status, message, ..
@@ -201,23 +207,21 @@ impl HttpTransport {
     }
 
     fn url_for(&self, key_name: &str, endpoint: &str) -> String {
-        let encoded_key_name: String = form_urlencoded::byte_serialize(key_name.as_bytes()).collect();
+        let encoded_key_name: String =
+            form_urlencoded::byte_serialize(key_name.as_bytes()).collect();
         format!("{}/v1/{}/{}", self.base_url, encoded_key_name, endpoint)
     }
 }
 
 #[async_trait]
 impl SimpleVaultTransport for HttpTransport {
-    async fn send_json<B>(
+    async fn send_json(
         &self,
         method: HttpMethod,
         key_name: &str,
         endpoint: &str,
-        body: Option<&B>,
-    ) -> Result<Value, ClientError>
-    where
-        B: Serialize + Send + Sync,
-    {
+        body: Option<Value>,
+    ) -> Result<Value, ClientError> {
         let url = self.url_for(key_name, endpoint);
         let mut request = match method {
             HttpMethod::Get => self.client.get(url),
@@ -231,7 +235,7 @@ impl SimpleVaultTransport for HttpTransport {
         }
 
         if let Some(payload) = body {
-            request = request.json(payload);
+            request = request.json(&payload);
         }
 
         let response = request
@@ -269,16 +273,13 @@ impl InMemoryTransport {
 #[cfg(any(test, feature = "test-utils"))]
 #[async_trait]
 impl SimpleVaultTransport for InMemoryTransport {
-    async fn send_json<B>(
+    async fn send_json(
         &self,
         method: HttpMethod,
         key_name: &str,
         endpoint: &str,
-        body: Option<&B>,
-    ) -> Result<Value, ClientError>
-    where
-        B: Serialize + Send + Sync,
-    {
+        body: Option<Value>,
+    ) -> Result<Value, ClientError> {
         use axum::body::Body;
         use axum::http::Request;
         use http_body_util::BodyExt;
@@ -299,7 +300,8 @@ impl SimpleVaultTransport for InMemoryTransport {
 
         let request = match body {
             Some(payload) => {
-                let body_string = serde_json::to_string(payload).map_err(ClientError::Serialize)?;
+                let body_string =
+                    serde_json::to_string(&payload).map_err(ClientError::Serialize)?;
                 builder
                     .header("content-type", "application/json")
                     .body(Body::from(body_string))

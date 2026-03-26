@@ -476,16 +476,16 @@ pub fn read_config_from_env(
     let config = match serde_json::from_str::<Config>(trimmed) {
         Ok(c) => c,
         Err(json_err) => {
-            let decoded = base64::engine::general_purpose::STANDARD.decode(trimmed).map_err(
-                |b64_err| {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(trimmed)
+                .map_err(|b64_err| {
                     anyhow::anyhow!(
                         "Config in env var '{}': not valid JSON ({}) and not valid base64 ({})",
                         env_var_name,
                         json_err,
                         b64_err
                     )
-                },
-            )?;
+                })?;
 
             let json_str = Zeroizing::new(String::from_utf8(decoded).map_err(|e| {
                 anyhow::anyhow!(
@@ -674,9 +674,10 @@ mod tests {
 
     #[test]
     fn operations_scope_deserialize_list() {
-        let scope: OperationsScope =
-            serde_json::from_str(r#"["encrypt", "decrypt", "rotate", "verify", "sign", "proxy", "db_query"]"#)
-                .unwrap();
+        let scope: OperationsScope = serde_json::from_str(
+            r#"["encrypt", "decrypt", "rotate", "verify", "sign", "proxy", "db_query"]"#,
+        )
+        .unwrap();
         match &scope {
             OperationsScope::List(ops) => assert_eq!(ops.len(), 7),
             OperationsScope::All => panic!("expected List"),

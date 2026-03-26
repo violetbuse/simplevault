@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::BytesMut;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,6 @@ use tokio::time::timeout;
 use tokio_postgres::NoTls;
 use tokio_postgres::config::Host;
 use tokio_postgres::error::DbError;
-use bytes::BytesMut;
 use tokio_postgres::types::{Format, IsNull, Json, ToSql, Type};
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -304,13 +304,15 @@ fn parse_query_params(
                 params.push(QueryParamOwned::Date(value));
             }
             TypedQueryParam::Time(v) => {
-                let value = NaiveTime::parse_from_str(v, "%H:%M:%S")
-                    .map_err(|error| anyhow::anyhow!("typed param time must match HH:MM:SS: {}", error))?;
+                let value = NaiveTime::parse_from_str(v, "%H:%M:%S").map_err(|error| {
+                    anyhow::anyhow!("typed param time must match HH:MM:SS: {}", error)
+                })?;
                 params.push(QueryParamOwned::Time(value));
             }
             TypedQueryParam::Uuid(v) => {
-                let value = Uuid::parse_str(v)
-                    .map_err(|error| anyhow::anyhow!("typed param uuid must be valid UUID: {}", error))?;
+                let value = Uuid::parse_str(v).map_err(|error| {
+                    anyhow::anyhow!("typed param uuid must be valid UUID: {}", error)
+                })?;
                 params.push(QueryParamOwned::Uuid(value));
             }
             TypedQueryParam::Bytea(v) => {
@@ -570,7 +572,8 @@ mod tests {
             from_value(json!({"type":"int2","value":7})).unwrap(),
             from_value(json!({"type":"smallint","value":8})).unwrap(),
             from_value(json!({"type":"timestamptz","value":"2025-01-01T12:30:45+00:00"})).unwrap(),
-            from_value(json!({"type":"uuid","value":"123e4567-e89b-12d3-a456-426614174000"})).unwrap(),
+            from_value(json!({"type":"uuid","value":"123e4567-e89b-12d3-a456-426614174000"}))
+                .unwrap(),
             from_value(json!({"type":"date","value":"2025-01-01"})).unwrap(),
             from_value(json!({"type":"time","value":"12:30:45"})).unwrap(),
             from_value(json!({"type":"bytea","value":"\\x68656c6c6f"})).unwrap(),
@@ -582,7 +585,9 @@ mod tests {
 
     #[test]
     fn parse_query_params_rejects_invalid_timestamptz() {
-        let error = from_value::<TypedQueryParam>(json!({"type":"timestamptz","value":"not-a-timestamp"})).unwrap_err();
+        let error =
+            from_value::<TypedQueryParam>(json!({"type":"timestamptz","value":"not-a-timestamp"}))
+                .unwrap_err();
         assert!(!error.to_string().is_empty());
     }
 }

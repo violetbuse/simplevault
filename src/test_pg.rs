@@ -15,10 +15,7 @@ impl TestPg {
         Self
     }
 
-    pub async fn create(
-        &self,
-        migration_sql: &str,
-    ) -> Result<(PostgreSQL, String), anyhow::Error> {
+    pub async fn create(&self, migration_sql: &str) -> Result<(PostgreSQL, String), anyhow::Error> {
         let port = allocate_free_port()?;
         let database_name = format!(
             "simplevault_test_{}_{}",
@@ -65,7 +62,8 @@ async fn run_migration(connection_string: &str, migration_sql: &str) -> Result<(
     if migration_sql.trim().is_empty() {
         return Ok(());
     }
-    let (client, connection) = tokio_postgres::connect(connection_string, tokio_postgres::NoTls).await?;
+    let (client, connection) =
+        tokio_postgres::connect(connection_string, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
         let _ = connection.await;
     });

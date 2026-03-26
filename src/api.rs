@@ -2115,7 +2115,10 @@ mod tests {
         assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
         assert_eq!(query_json["rows"][0][0].as_i64().unwrap(), 7);
         assert_eq!(query_json["rows"][0][1].as_str().unwrap(), "ok");
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2163,7 +2166,10 @@ mod tests {
             "expected column context in error message, got: {}",
             error_message
         );
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2200,7 +2206,10 @@ mod tests {
         assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
         assert_eq!(query_json["rows"][0][0].as_str().unwrap(), "customer");
         assert_eq!(query_json["rows"][0][1].as_str().unwrap(), "gold");
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2240,7 +2249,10 @@ mod tests {
                 .unwrap_or_default()
                 .starts_with("2025-01-02 03:04:05")
         );
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2277,7 +2289,10 @@ mod tests {
         assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
         assert_eq!(query_json["rows"][0][0].as_str().unwrap(), "customer");
         assert_eq!(query_json["rows"][0][1].as_i64().unwrap(), 3);
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2313,7 +2328,10 @@ mod tests {
         assert_eq!(query_json["rows"][0][0].as_i64().unwrap(), 1);
         assert_eq!(query_json["rows"][0][1].as_i64().unwrap(), 2);
         assert_eq!(query_json["rows"][0][2].as_i64().unwrap(), 3);
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2362,7 +2380,10 @@ mod tests {
         assert_eq!(query_json["rows"][0][0].as_bool(), Some(true));
         assert_eq!(query_json["rows"][0][1].as_bool(), Some(true));
         assert_eq!(query_json["rows"][0][2].as_i64(), Some(5));
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2387,10 +2408,7 @@ mod tests {
         let app = build_router(db_query_config_for_connection_string(&connection_string));
         let ciphertext = encrypt_db_connection_string(&app, &connection_string).await;
 
-        let insert_both_null = format!(
-            "insert into {} (id, n, t) values (1, $1, $2)",
-            table
-        );
+        let insert_both_null = format!("insert into {} (id, n, t) values (1, $1, $2)", table);
         let req = Request::post("/v1/vault/db-query")
             .header("content-type", "application/json")
             .header("x-api-key", "db-query-key")
@@ -2446,10 +2464,7 @@ mod tests {
         assert!(query_json["rows"][0][0].is_null());
         assert!(query_json["rows"][0][1].is_null());
 
-        let insert_mixed = format!(
-            "insert into {} (id, n, t) values (2, $1, $2)",
-            table
-        );
+        let insert_mixed = format!("insert into {} (id, n, t) values (2, $1, $2)", table);
         let req = Request::post("/v1/vault/db-query")
             .header("content-type", "application/json")
             .header("x-api-key", "db-query-key")
@@ -2504,7 +2519,10 @@ mod tests {
         assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
         assert_eq!(query_json["rows"][0][0].as_i64(), Some(42));
         assert!(query_json["rows"][0][1].is_null());
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2607,18 +2625,29 @@ mod tests {
         assert_eq!(row[3].as_i64(), Some(9876543210_i64));
         assert_eq!(row[4].as_f64(), Some(12.75));
         assert_eq!(row[5].as_str(), Some("hello-types"));
-        assert!(row[6].as_str().unwrap_or_default().starts_with("2025-01-02 03:04:05"));
+        assert!(
+            row[6]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("2025-01-02 03:04:05")
+        );
         assert_eq!(row[7].as_str(), Some("2025-01-02 03:04:05"));
         assert_eq!(row[8].as_str(), Some("2025-01-02"));
         assert_eq!(row[9].as_str(), Some("03:04:05"));
-        assert_eq!(row[10].as_str(), Some("123e4567-e89b-12d3-a456-426614174000"));
+        assert_eq!(
+            row[10].as_str(),
+            Some("123e4567-e89b-12d3-a456-426614174000")
+        );
         assert_eq!(row[11].as_str(), Some("68656c6c6f"));
         assert_eq!(row[12]["kind"].as_str(), Some("object"));
         assert_eq!(row[12]["n"].as_i64(), Some(1));
         assert_eq!(row[13][0].as_i64(), Some(1));
         assert_eq!(row[13][1].as_i64(), Some(2));
         assert_eq!(row[13][2].as_i64(), Some(3));
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     #[tokio::test]
@@ -2716,7 +2745,10 @@ mod tests {
         assert_eq!(query_json["row_count"].as_u64().unwrap(), 1);
         let row = query_json["rows"][0].as_array().unwrap();
         assert!(row.iter().all(serde_json::Value::is_null));
-        instance.stop().await.expect("embedded postgres should stop");
+        instance
+            .stop()
+            .await
+            .expect("embedded postgres should stop");
     }
 
     // --- Routing tests ---
