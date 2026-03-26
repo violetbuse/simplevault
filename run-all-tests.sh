@@ -34,7 +34,7 @@ done
 echo "=========================================="
 echo "1. Rust tests (cargo test)"
 echo "=========================================="
-cargo test
+cargo test --lib --features test-utils
 
 echo ""
 echo "=========================================="
