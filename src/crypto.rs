@@ -120,21 +120,17 @@ impl CipherText {
         })
     }
 
-    pub fn to_string(&self) -> String {
-        self.encoded_string()
-    }
-
     pub fn parse(input: &str) -> Result<Self, anyhow::Error> {
         input.parse()
     }
 
-    fn encoded_string(&self) -> String {
+    pub fn encoded_string(&self) -> String {
         let nonce_hex = hex::encode(self.nonce.expose_secret());
         let ct_hex = hex::encode(self.ciphertext.expose_secret());
         format!("v{}:{}:{}", self.key_version, ct_hex, nonce_hex)
     }
 
-    fn parse_string(input: &str) -> Result<Self, anyhow::Error> {
+    pub fn parse_string(input: &str) -> Result<Self, anyhow::Error> {
         let parts: Vec<&str> = input.splitn(3, ':').collect();
         if parts.len() != 3 {
             return Err(anyhow::anyhow!(
