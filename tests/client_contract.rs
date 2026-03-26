@@ -116,8 +116,8 @@ async fn run_contract(client: &SimpleVaultClient) {
 #[tokio::test]
 async fn in_memory_transport_contract() {
     let app = api::build_router(test_config());
-    let transport = InMemoryTransport::new(app, Some("test-key".to_string()));
-    let client = SimpleVaultClient::new("vault", transport);
+    let transport = InMemoryTransport::new(app, "vault", Some("test-key".to_string()));
+    let client = SimpleVaultClient::new(transport);
     run_contract(&client).await;
 }
 
@@ -132,8 +132,12 @@ async fn http_transport_contract() {
         let _ = axum::serve(listener, app).await;
     });
 
-    let transport = HttpTransport::new(format!("http://{}", addr), Some("test-key".to_string()));
-    let client = SimpleVaultClient::new("vault", transport);
+    let transport = HttpTransport::new(
+        format!("http://{}", addr),
+        "vault",
+        Some("test-key".to_string()),
+    );
+    let client = SimpleVaultClient::new(transport);
     run_contract(&client).await;
 
     server.abort();

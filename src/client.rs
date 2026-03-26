@@ -16,31 +16,29 @@ use crate::proxy_substitute::{OutboundRequest, ProxySubstituteResponse};
 
 #[derive(Clone)]
 pub struct SimpleVaultClient {
-    key_name: String,
     transport: Arc<dyn SimpleVaultTransport>,
 }
 
 impl std::fmt::Debug for SimpleVaultClient {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SimpleVaultClient")
-            .field("key_name", &self.key_name)
+            .field("key_name", &self.transport.key_name())
             .finish()
     }
 }
 
 impl SimpleVaultClient {
-    pub fn new<T>(key_name: impl Into<String>, transport: T) -> Self
+    pub fn new<T>(transport: T) -> Self
     where
         T: SimpleVaultTransport,
     {
         Self {
-            key_name: key_name.into(),
             transport: Arc::new(transport),
         }
     }
 
     pub fn key_name(&self) -> &str {
-        &self.key_name
+        &self.transport.key_name()
     }
 
     pub async fn encrypt(
@@ -103,7 +101,12 @@ impl SimpleVaultClient {
         let body = serde_json::to_value(body).map_err(ClientError::Serialize)?;
         let value = self
             .transport
-            .send_json(HttpMethod::Post, &self.key_name, endpoint, Some(body))
+            .send_json(
+                HttpMethod::Post,
+                self.transport.key_name(),
+                endpoint,
+                Some(body),
+            )
             .await?;
         serde_json::from_value(value).map_err(ClientError::Deserialize)
     }
@@ -114,31 +117,42 @@ impl SimpleVaultClient {
     {
         let value = self
             .transport
-            .send_json(HttpMethod::Get, &self.key_name, endpoint, None)
+            .send_json(HttpMethod::Get, self.transport.key_name(), endpoint, None)
             .await?;
         serde_json::from_value(value).map_err(ClientError::Deserialize)
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct HttpConfig {
+    key_name: String,
+    base_url: String,
+    api_key: Option<String>,
+}
+
 impl SimpleVaultClient {
-    pub fn with_http_transport(
-        key_name: impl Into<String>,
-        base_url: impl Into<String>,
-        api_key: Option<String>,
-    ) -> Self {
-        Self::new(key_name, HttpTransport::new(base_url, api_key))
+    pub fn with_http_transport(config: HttpConfig) -> Self {
+        Self::new(HttpTransport::new(
+            config.base_url,
+            config.key_name,
+            config.api_key,
+        ))
     }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 impl SimpleVaultClient {
-    pub fn with_test_transport(config: Option<Value>) -> Result<Self, ClientError> {
+    pub fn with_test_transport(
+        config: Option<Value>,
+        key_name: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Result<Self, ClientError> {
         let config_value = config.unwrap_or_else(default_permissive_test_config);
         let parsed_config: Config =
             serde_json::from_value(config_value).map_err(ClientError::InvalidConfig)?;
         let app = crate::api::build_router(parsed_config);
-        let transport = InMemoryTransport::new(app, None);
-        Ok(Self::new("vault", transport))
+        let transport = InMemoryTransport::new(app, key_name.into(), api_key);
+        Ok(Self::new(transport))
     }
 }
 
@@ -151,6 +165,8 @@ pub trait SimpleVaultTransport: Send + Sync + 'static {
         endpoint: &str,
         body: Option<Value>,
     ) -> Result<Value, ClientError>;
+
+    fn key_name(&self) -> &str;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -193,14 +209,20 @@ impl std::error::Error for ClientError {}
 #[derive(Debug, Clone)]
 pub struct HttpTransport {
     base_url: String,
+    key_name: String,
     api_key: Option<String>,
     client: reqwest::Client,
 }
 
 impl HttpTransport {
-    pub fn new(base_url: impl Into<String>, api_key: Option<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        key_name: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            key_name: key_name.into(),
             api_key,
             client: reqwest::Client::new(),
         }
@@ -254,19 +276,28 @@ impl SimpleVaultTransport for HttpTransport {
         }
         Ok(parsed.unwrap_or(Value::Null))
     }
+
+    fn key_name(&self) -> &str {
+        &self.key_name
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 #[derive(Debug, Clone)]
 pub struct InMemoryTransport {
     app: axum::Router,
+    key_name: String,
     api_key: Option<String>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 impl InMemoryTransport {
-    pub fn new(app: axum::Router, api_key: Option<String>) -> Self {
-        Self { app, api_key }
+    pub fn new(app: axum::Router, key_name: impl Into<String>, api_key: Option<String>) -> Self {
+        Self {
+            app,
+            key_name: key_name.into(),
+            api_key,
+        }
     }
 }
 
@@ -333,6 +364,10 @@ impl SimpleVaultTransport for InMemoryTransport {
             return Err(status_error(status.as_u16(), parsed));
         }
         Ok(parsed.unwrap_or(Value::Null))
+    }
+
+    fn key_name(&self) -> &str {
+        &self.key_name
     }
 }
 
@@ -644,8 +679,8 @@ mod tests {
 
     fn make_client(config: Config, api_key: Option<&str>) -> SimpleVaultClient {
         let app = api::build_router(config);
-        let transport = InMemoryTransport::new(app, api_key.map(str::to_string));
-        SimpleVaultClient::new("vault", transport)
+        let transport = InMemoryTransport::new(app, "vault", api_key.map(str::to_string));
+        SimpleVaultClient::new(transport)
     }
 
     fn clone_ciphertext(ciphertext: &CipherText) -> CipherText {
@@ -708,7 +743,8 @@ mod tests {
 
     #[tokio::test]
     async fn with_test_transport_uses_default_config() {
-        let client = SimpleVaultClient::with_test_transport(None).expect("default test transport");
+        let client = SimpleVaultClient::with_test_transport(None, "vault", None)
+            .expect("default test transport");
         let encrypted = client
             .encrypt("hello")
             .await
@@ -722,8 +758,9 @@ mod tests {
 
     #[tokio::test]
     async fn with_test_transport_rejects_invalid_config() {
-        let error = SimpleVaultClient::with_test_transport(Some(json!({ "server_port": "bad" })))
-            .expect_err("invalid config should fail");
+        let error =
+            SimpleVaultClient::with_test_transport(Some(json!({ "server_port": "bad" })), "", None)
+                .expect_err("invalid config should fail");
         assert!(matches!(error, ClientError::InvalidConfig(_)));
     }
 
