@@ -124,14 +124,14 @@ impl SimpleVaultClient {
 }
 
 #[derive(Debug, Clone)]
-pub struct HttpConfig {
-    key_name: String,
-    base_url: String,
-    api_key: Option<String>,
+pub struct HttpClientConfig {
+    pub key_name: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
 }
 
 impl SimpleVaultClient {
-    pub fn with_http_transport(config: HttpConfig) -> Self {
+    pub fn with_http_transport(config: HttpClientConfig) -> Self {
         Self::new(HttpTransport::new(
             config.base_url,
             config.key_name,
