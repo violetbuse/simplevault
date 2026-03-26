@@ -3,6 +3,10 @@ name = "simplevault"
 version = "0.5.5"
 edition = "2024"
 
+[features]
+default = []
+test-utils = []
+
 [dependencies]
 aes-gcm = "0.10"
 base64 = "0.22"
@@ -16,6 +20,7 @@ hmac = "0.12"
 rand = "0.10.0"
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+async-trait = "0.1"
 secrecy = "0.10"
 serde = { version = "1.0.228", features = ["derive"]}
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
@@ -27,7 +32,13 @@ tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chron
 deadpool-postgres = "0.14"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 uuid = "1"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 
 [dev-dependencies]
-http-body-util = "0.1"
-tower = { version = "0.5", features = ["util"] }
+postgresql_embedded = { version = "0.20.2", default-features = false, features = ["tokio", "rustls", "zonky"] }
+
+[[test]]
+name = "client_contract"
+path = "tests/client_contract.rs"
+required-features = ["test-utils"]

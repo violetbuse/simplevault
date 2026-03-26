@@ -23,14 +23,14 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_MAX_ROWS: usize = 500;
 const DEFAULT_POOL_SIZE: usize = 16;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DbQueryColumn {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub db_type: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DbQueryResult {
     pub columns: Vec<DbQueryColumn>,
     pub rows: Vec<Vec<Value>>,
@@ -209,7 +209,7 @@ enum QueryParamOwned {
     Json(Json<Value>),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum TypedQueryParam {
     #[serde(rename = "null")]

@@ -13,7 +13,7 @@ pub struct ProxySubstituteRequest {
     pub placeholder: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboundRequest {
     pub method: String,
     pub url: String,
@@ -23,7 +23,7 @@ pub struct OutboundRequest {
     pub body: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ProxySubstituteResponse {
     pub status: u16,
     pub headers: HashMap<String, String>,

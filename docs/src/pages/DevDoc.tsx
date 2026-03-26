@@ -48,6 +48,28 @@ const { version } = await client.getVersion('vault');`}
       </section>
 
       <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Rust Client Library</h2>
+        <p className="text-[var(--text-muted)] mb-4">
+          The Rust crate now includes a transport-backed client in <code className="bg-black/30 px-1 rounded">simplevault::client</code>.
+          It supports a real HTTP transport and an in-memory Axum transport for tests.
+        </p>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-4">
+{`use simplevault::client::{HttpTransport, SimpleVaultClient};
+
+let transport = HttpTransport::new("http://localhost:8080", Some("api-key".to_string()));
+let client = SimpleVaultClient::new("vault", transport);
+
+let encrypted = client.encrypt("secret").await?;
+let decrypted = client.decrypt(encrypted.ciphertext).await?;
+assert_eq!(decrypted.plaintext, "secret");`}
+        </pre>
+        <p className="text-[var(--text-muted)]">
+          For serverless tests, use <code className="bg-black/30 px-1 rounded">InMemoryTransport</code> with
+          <code className="bg-black/30 px-1 rounded"> api::build_router(config)</code> to run requests directly against the router.
+        </p>
+      </section>
+
+      <section className="mb-10">
         <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">CLI</h2>
         <p className="text-[var(--text-muted)] mb-4">
           The <code className="bg-black/30 px-1 rounded">simplevault</code> CLI provides two commands: <code className="bg-black/30 px-1 rounded">dev</code> (default) and <code className="bg-black/30 px-1 rounded">init</code>.
