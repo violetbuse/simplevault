@@ -1,4 +1,5 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
+use std::str::FromStr;
 
 use aes_gcm::{
     Aes256Gcm,
@@ -117,6 +118,94 @@ impl CipherText {
             nonce: SecretBox::new(Box::new(nonce_arr)),
             ciphertext: ciphertext_secret,
         })
+    }
+
+    pub fn to_string(&self) -> String {
+        self.encoded_string()
+    }
+
+    pub fn parse(input: &str) -> Result<Self, anyhow::Error> {
+        input.parse()
+    }
+
+    fn encoded_string(&self) -> String {
+        let nonce_hex = hex::encode(self.nonce.expose_secret());
+        let ct_hex = hex::encode(self.ciphertext.expose_secret());
+        format!("v{}:{}:{}", self.key_version, ct_hex, nonce_hex)
+    }
+
+    fn parse_string(input: &str) -> Result<Self, anyhow::Error> {
+        let parts: Vec<&str> = input.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return Err(anyhow::anyhow!(
+                "expected v<key_version>:<hex_ciphertext>:<hex_nonce>, got {} parts",
+                parts.len()
+            ));
+        }
+
+        let key_version = parts[0]
+            .strip_prefix('v')
+            .ok_or_else(|| anyhow::anyhow!("first part must start with 'v'"))?
+            .parse::<u32>()
+            .map_err(|e| anyhow::anyhow!("invalid key_version: {}", e))?;
+
+        let ct_bytes =
+            hex::decode(parts[1]).map_err(|e| anyhow::anyhow!("invalid ciphertext hex: {}", e))?;
+
+        let nonce_bytes =
+            hex::decode(parts[2]).map_err(|e| anyhow::anyhow!("invalid nonce hex: {}", e))?;
+
+        if nonce_bytes.len() != 12 {
+            return Err(anyhow::anyhow!(
+                "invalid length {}, expected nonce must be exactly 12 bytes (96 bits)",
+                nonce_bytes.len()
+            ));
+        }
+
+        let mut nonce_arr = [0u8; 12];
+        nonce_arr.copy_from_slice(&nonce_bytes);
+
+        Ok(CipherText {
+            key_version,
+            nonce: SecretBox::new(Box::new(nonce_arr)),
+            ciphertext: SecretSlice::from(ct_bytes),
+        })
+    }
+}
+
+impl Display for CipherText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.encoded_string())
+    }
+}
+
+impl FromStr for CipherText {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_string(s)
+    }
+}
+
+impl TryFrom<&str> for CipherText {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl TryFrom<String> for CipherText {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<CipherText> for String {
+    fn from(value: CipherText) -> Self {
+        value.encoded_string()
     }
 }
 
@@ -285,10 +374,7 @@ impl Serialize for CipherText {
     where
         S: serde::Serializer,
     {
-        let nonce_hex = hex::encode(self.nonce.expose_secret());
-        let ct_hex = hex::encode(self.ciphertext.expose_secret());
-        let s = format!("v{}:{}:{}", self.key_version, ct_hex, nonce_hex);
-        serializer.serialize_str(&s)
+        serializer.serialize_str(&self.encoded_string())
     }
 }
 
@@ -313,43 +399,7 @@ impl<'de> Deserialize<'de> for CipherText {
             where
                 E: SerdeError,
             {
-                let parts: Vec<&str> = v.splitn(3, ':').collect();
-                if parts.len() != 3 {
-                    return Err(E::custom(format!(
-                        "expected v<key_version>:<hex_ciphertext>:<hex_nonce>, got {} parts",
-                        parts.len()
-                    )));
-                }
-
-                let key_version = parts[0]
-                    .strip_prefix('v')
-                    .ok_or_else(|| E::custom("first part must start with 'v'"))?
-                    .parse::<u32>()
-                    .map_err(|e| E::custom(format!("invalid key_version: {}", e)))?;
-
-                let ct_bytes = hex::decode(parts[1])
-                    .map_err(|e| E::custom(format!("invalid ciphertext hex: {}", e)))?;
-
-                let nonce_bytes = hex::decode(parts[2])
-                    .map_err(|e| E::custom(format!("invalid nonce hex: {}", e)))?;
-
-                if nonce_bytes.len() != 12 {
-                    return Err(E::invalid_length(
-                        nonce_bytes.len(),
-                        &"nonce must be exactly 12 bytes (96 bits)",
-                    ));
-                }
-
-                let mut nonce_arr = [0u8; 12];
-                nonce_arr.copy_from_slice(&nonce_bytes);
-
-                let ciphertext = SecretSlice::from(ct_bytes);
-
-                Ok(CipherText {
-                    key_version,
-                    nonce: SecretBox::new(Box::new(nonce_arr)),
-                    ciphertext,
-                })
+                CipherText::parse_string(v).map_err(E::custom)
             }
         }
 
@@ -575,6 +625,57 @@ mod tests {
         let orig_dec = ct.decrypt(&key).unwrap();
         let rest_dec = restored.decrypt(&key).unwrap();
         assert_eq!(orig_dec.expose_secret(), rest_dec.expose_secret());
+    }
+
+    #[test]
+    fn ciphertext_to_string_matches_serde_representation() {
+        let key = make_encryption_key();
+        let plaintext = make_plaintext("stringify me");
+        let ct = CipherText::encrypt(plaintext, &key, 5).unwrap();
+        let json = serde_json::to_string(&ct).unwrap();
+        assert_eq!(ct.to_string(), json.trim_matches('"'));
+    }
+
+    #[test]
+    fn ciphertext_parse_roundtrip() {
+        let key = make_encryption_key();
+        let plaintext = make_plaintext("parse me");
+        let ct = CipherText::encrypt(plaintext, &key, 12).unwrap();
+        let parsed = CipherText::parse(&ct.to_string()).unwrap();
+        let decrypted = parsed.decrypt(&key).unwrap();
+        assert_eq!(parsed.key_version, 12);
+        assert_eq!(decrypted.expose_secret(), b"parse me".as_slice());
+    }
+
+    #[test]
+    fn ciphertext_try_from_str_and_string_roundtrip() {
+        let key = make_encryption_key();
+        let plaintext = make_plaintext("convert me");
+        let ct = CipherText::encrypt(plaintext, &key, 3).unwrap();
+        let encoded = ct.to_string();
+
+        let from_str = CipherText::try_from(encoded.as_str()).unwrap();
+        let from_string = CipherText::try_from(encoded.clone()).unwrap();
+        let decrypted_from_str = from_str.decrypt(&key).unwrap();
+        let decrypted_from_string = from_string.decrypt(&key).unwrap();
+
+        assert_eq!(decrypted_from_str.expose_secret(), b"convert me".as_slice());
+        assert_eq!(
+            decrypted_from_string.expose_secret(),
+            b"convert me".as_slice()
+        );
+    }
+
+    #[test]
+    fn ciphertext_into_string_roundtrip() {
+        let key = make_encryption_key();
+        let plaintext = make_plaintext("into string");
+        let ct = CipherText::encrypt(plaintext, &key, 8).unwrap();
+        let encoded: String = ct.into();
+        let parsed: CipherText = encoded.parse().unwrap();
+        let decrypted = parsed.decrypt(&key).unwrap();
+        assert_eq!(parsed.key_version, 8);
+        assert_eq!(decrypted.expose_secret(), b"into string".as_slice());
     }
 
     #[test]
