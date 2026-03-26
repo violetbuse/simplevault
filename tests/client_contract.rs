@@ -1,7 +1,8 @@
 use simplevault::api;
 use simplevault::client::{
     ClientError, CreateSignatureRequest, DbQueryPayload, DbQueryRequest, HttpTransport,
-    InMemoryTransport, ProxySubstituteRequest, SimpleVaultClient, VerifySignatureRequest,
+    InMemoryTransport, ProxySubstituteRequest, SignatureAlgorithm, SimpleVaultClient,
+    VerifySignatureRequest,
 };
 use simplevault::config::Config;
 use simplevault::proxy_substitute::OutboundRequest;
@@ -22,13 +23,6 @@ fn test_config() -> Config {
     .expect("test config should deserialize")
 }
 
-fn clone_ciphertext(
-    ciphertext: &simplevault::crypto::CipherText,
-) -> simplevault::crypto::CipherText {
-    serde_json::from_value(serde_json::to_value(ciphertext).expect("serialize ciphertext"))
-        .expect("deserialize ciphertext")
-}
-
 async fn run_contract(client: &SimpleVaultClient) {
     let encrypted = client
         .encrypt("integration test secret")
@@ -36,23 +30,23 @@ async fn run_contract(client: &SimpleVaultClient) {
         .expect("encrypt should succeed");
 
     let decrypted = client
-        .decrypt(clone_ciphertext(&encrypted.ciphertext))
+        .decrypt(encrypted.clone())
         .await
         .expect("decrypt should succeed");
-    assert_eq!(decrypted.plaintext, "integration test secret");
+    assert_eq!(decrypted, "integration test secret");
 
     let version = client.version().await.expect("version should succeed");
     assert!(version.version >= 1);
 
     let rotated = client
-        .rotate(clone_ciphertext(&encrypted.ciphertext))
+        .rotate(encrypted.clone())
         .await
         .expect("rotate should succeed");
     let roundtrip = client
-        .decrypt(rotated.ciphertext)
+        .decrypt(rotated)
         .await
         .expect("decrypt rotated should succeed");
-    assert_eq!(roundtrip.plaintext, "integration test secret");
+    assert_eq!(roundtrip, "integration test secret");
 
     let secret = client
         .encrypt("whsec_integration_secret")
@@ -60,35 +54,34 @@ async fn run_contract(client: &SimpleVaultClient) {
         .expect("encrypt signature secret should succeed");
     let payload_hex = hex::encode(br#"{"id":"evt_integration"}"#);
     let create_signature_response = client
-        .create_signature(CreateSignatureRequest {
-            ciphertext: clone_ciphertext(&secret.ciphertext),
-            payload: payload_hex.clone(),
-            algorithm: "hmac-sha256".to_string(),
-        })
+        .create_signature(CreateSignatureRequest::new(
+            secret.clone(),
+            payload_hex.clone(),
+            SignatureAlgorithm::HmacSha256,
+        ))
         .await
         .expect("create signature should succeed");
     let verify = client
-        .verify_signature(VerifySignatureRequest {
-            ciphertext: clone_ciphertext(&secret.ciphertext),
-            payload: payload_hex,
-            signature: create_signature_response.signature,
-            algorithm: "hmac-sha256".to_string(),
-        })
+        .verify_signature(VerifySignatureRequest::new(
+            secret.clone(),
+            payload_hex,
+            create_signature_response.signature,
+            SignatureAlgorithm::HmacSha256,
+        ))
         .await
         .expect("verify signature should succeed");
     assert!(verify.verified);
 
     let proxy_error = client
-        .proxy_substitute(ProxySubstituteRequest {
-            ciphertext: clone_ciphertext(&secret.ciphertext),
-            request: OutboundRequest {
+        .proxy_substitute(ProxySubstituteRequest::new(
+            secret.clone(),
+            OutboundRequest {
                 method: "GET".to_string(),
                 url: "https://example.com".to_string(),
                 headers: None,
                 body: None,
             },
-            placeholder: None,
-        })
+        ))
         .await
         .expect_err("proxy should be forbidden for this API key");
     match proxy_error {
@@ -97,14 +90,7 @@ async fn run_contract(client: &SimpleVaultClient) {
     }
 
     let db_error = client
-        .db_query(DbQueryRequest {
-            ciphertext: clone_ciphertext(&secret.ciphertext),
-            query: DbQueryPayload {
-                sql: "select 1".to_string(),
-                params: None,
-            },
-            options: None,
-        })
+        .db_query(DbQueryRequest::new(secret, DbQueryPayload::new("select 1")))
         .await
         .expect_err("db query should be forbidden for this API key");
     match db_error {

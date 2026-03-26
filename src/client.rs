@@ -10,7 +10,6 @@ use serde_json::json;
 
 #[cfg(any(test, feature = "test-utils"))]
 use crate::config::Config;
-use crate::crypto::CipherText;
 use crate::db_query::{DbQueryResult, TypedQueryParam};
 use crate::proxy_substitute::{OutboundRequest, ProxySubstituteResponse};
 
@@ -41,27 +40,29 @@ impl SimpleVaultClient {
         &self.transport.key_name()
     }
 
-    pub async fn encrypt(
-        &self,
-        plaintext: impl Into<String>,
-    ) -> Result<CipherTextObject, ClientError> {
-        self.post_json(
+    pub async fn encrypt(&self, plaintext: impl Into<String>) -> Result<String, ClientError> {
+        self.post_json::<_, CipherTextObject>(
             "encrypt",
             EncryptRequest {
                 plaintext: plaintext.into(),
             },
         )
         .await
+        .map(|response| response.ciphertext)
     }
 
-    pub async fn decrypt(&self, ciphertext: CipherText) -> Result<PlainTextObject, ClientError> {
-        self.post_json("decrypt", CipherTextObject { ciphertext })
+    pub async fn decrypt(&self, ciphertext: impl Into<String>) -> Result<String, ClientError> {
+        let ciphertext = ciphertext.into();
+        self.post_json::<_, PlainTextObject>("decrypt", CipherTextObject { ciphertext })
             .await
+            .map(|response| response.plaintext)
     }
 
-    pub async fn rotate(&self, ciphertext: CipherText) -> Result<CipherTextObject, ClientError> {
-        self.post_json("rotate", CipherTextObject { ciphertext })
+    pub async fn rotate(&self, ciphertext: impl Into<String>) -> Result<String, ClientError> {
+        let ciphertext = ciphertext.into();
+        self.post_json::<_, CipherTextObject>("rotate", CipherTextObject { ciphertext })
             .await
+            .map(|response| response.ciphertext)
     }
 
     pub async fn create_signature(
@@ -418,7 +419,7 @@ struct EncryptRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CipherTextObject {
-    pub ciphertext: CipherText,
+    pub ciphertext: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,12 +427,44 @@ pub struct PlainTextObject {
     pub plaintext: String,
 }
 
+impl From<PlainTextObject> for String {
+    fn from(value: PlainTextObject) -> Self {
+        value.plaintext
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SignatureAlgorithm {
+    #[serde(rename = "hmac-sha1")]
+    HmacSha1,
+    #[serde(rename = "hmac-sha256")]
+    HmacSha256,
+    #[serde(rename = "hmac-sha512")]
+    HmacSha512,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VerifySignatureRequest {
-    pub ciphertext: CipherText,
+    pub ciphertext: String,
     pub payload: String,
     pub signature: String,
-    pub algorithm: String,
+    pub algorithm: SignatureAlgorithm,
+}
+
+impl VerifySignatureRequest {
+    pub fn new(
+        ciphertext: impl Into<String>,
+        payload: impl Into<String>,
+        signature: impl Into<String>,
+        algorithm: SignatureAlgorithm,
+    ) -> Self {
+        Self {
+            ciphertext: ciphertext.into(),
+            payload: payload.into(),
+            signature: signature.into(),
+            algorithm,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -441,9 +474,23 @@ pub struct VerifySignatureResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSignatureRequest {
-    pub ciphertext: CipherText,
+    pub ciphertext: String,
     pub payload: String,
-    pub algorithm: String,
+    pub algorithm: SignatureAlgorithm,
+}
+
+impl CreateSignatureRequest {
+    pub fn new(
+        ciphertext: impl Into<String>,
+        payload: impl Into<String>,
+        algorithm: SignatureAlgorithm,
+    ) -> Self {
+        Self {
+            ciphertext: ciphertext.into(),
+            payload: payload.into(),
+            algorithm,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -453,18 +500,48 @@ pub struct CreateSignatureResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProxySubstituteRequest {
-    pub ciphertext: CipherText,
+    pub ciphertext: String,
     pub request: OutboundRequest,
     #[serde(default)]
     pub placeholder: Option<String>,
 }
 
+impl ProxySubstituteRequest {
+    pub fn new(ciphertext: impl Into<String>, request: OutboundRequest) -> Self {
+        Self {
+            ciphertext: ciphertext.into(),
+            request,
+            placeholder: None,
+        }
+    }
+
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DbQueryRequest {
-    pub ciphertext: CipherText,
+    pub ciphertext: String,
     pub query: DbQueryPayload,
     #[serde(default)]
     pub options: Option<DbQueryOptions>,
+}
+
+impl DbQueryRequest {
+    pub fn new(ciphertext: impl Into<String>, query: DbQueryPayload) -> Self {
+        Self {
+            ciphertext: ciphertext.into(),
+            query,
+            options: None,
+        }
+    }
+
+    pub fn with_options(mut self, options: DbQueryOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -472,6 +549,20 @@ pub struct DbQueryPayload {
     pub sql: String,
     #[serde(default)]
     pub params: Option<Vec<TypedQueryParam>>,
+}
+
+impl DbQueryPayload {
+    pub fn new(sql: impl Into<String>) -> Self {
+        Self {
+            sql: sql.into(),
+            params: None,
+        }
+    }
+
+    pub fn with_params(mut self, params: Vec<TypedQueryParam>) -> Self {
+        self.params = Some(params);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -683,11 +774,6 @@ mod tests {
         SimpleVaultClient::new(transport)
     }
 
-    fn clone_ciphertext(ciphertext: &CipherText) -> CipherText {
-        serde_json::from_value(serde_json::to_value(ciphertext).expect("serialize ciphertext"))
-            .expect("deserialize ciphertext")
-    }
-
     fn assert_http_status(error: ClientError, expected_status: u16) -> Option<Value> {
         match error {
             ClientError::HttpStatus { status, body, .. } => {
@@ -701,7 +787,7 @@ mod tests {
     async fn make_db_fixture(
         migration_sql: &str,
         access: &str,
-    ) -> (PostgreSQL, SimpleVaultClient, CipherText) {
+    ) -> (PostgreSQL, SimpleVaultClient, String) {
         let test_pg = TestPg::new();
         let (instance, connection_string) = test_pg
             .create(migration_sql)
@@ -714,8 +800,7 @@ mod tests {
         let ciphertext = client
             .encrypt(connection_string)
             .await
-            .expect("encrypt db connection string")
-            .ciphertext;
+            .expect("encrypt db connection string");
         (instance, client, ciphertext)
     }
 
@@ -750,10 +835,10 @@ mod tests {
             .await
             .expect("encrypt should succeed");
         let decrypted = client
-            .decrypt(clone_ciphertext(&encrypted.ciphertext))
+            .decrypt(encrypted.clone())
             .await
             .expect("decrypt should succeed");
-        assert_eq!(decrypted.plaintext, "hello");
+        assert_eq!(decrypted, "hello");
     }
 
     #[tokio::test]
@@ -768,11 +853,8 @@ mod tests {
     async fn encrypt_decrypt_roundtrip() {
         let client = make_client(config_no_auth(), None);
         let encrypted = client.encrypt("integration secret").await.expect("encrypt");
-        let decrypted = client
-            .decrypt(clone_ciphertext(&encrypted.ciphertext))
-            .await
-            .expect("decrypt");
-        assert_eq!(decrypted.plaintext, "integration secret");
+        let decrypted = client.decrypt(encrypted.clone()).await.expect("decrypt");
+        assert_eq!(decrypted, "integration secret");
     }
 
     #[tokio::test]
@@ -788,16 +870,12 @@ mod tests {
         let old_ciphertext = make_client(config_with_only_v1_key(), None)
             .encrypt("rotate me")
             .await
-            .expect("encrypt")
-            .ciphertext;
+            .expect("encrypt");
         let rotated = client.rotate(old_ciphertext).await.expect("rotate");
-        assert_eq!(rotated.ciphertext.key_version, 2);
+        assert!(rotated.starts_with("v2:"));
 
-        let decrypted = client
-            .decrypt(rotated.ciphertext)
-            .await
-            .expect("decrypt rotated");
-        assert_eq!(decrypted.plaintext, "rotate me");
+        let decrypted = client.decrypt(rotated).await.expect("decrypt rotated");
+        assert_eq!(decrypted, "rotate me");
     }
 
     #[tokio::test]
@@ -806,8 +884,7 @@ mod tests {
         let ciphertext = make_client(config_no_auth(), None)
             .encrypt("secret")
             .await
-            .expect("encrypt")
-            .ciphertext;
+            .expect("encrypt");
         let error = client
             .decrypt(ciphertext)
             .await
@@ -829,21 +906,21 @@ mod tests {
         let payload_hex = hex::encode(br#"{"id":"evt_client"}"#);
 
         let created = client
-            .create_signature(CreateSignatureRequest {
-                ciphertext: clone_ciphertext(&secret.ciphertext),
-                payload: payload_hex.clone(),
-                algorithm: "hmac-sha256".to_string(),
-            })
+            .create_signature(CreateSignatureRequest::new(
+                secret.clone(),
+                payload_hex.clone(),
+                SignatureAlgorithm::HmacSha256,
+            ))
             .await
             .expect("create signature");
 
         let verified = client
-            .verify_signature(VerifySignatureRequest {
-                ciphertext: clone_ciphertext(&secret.ciphertext),
-                payload: payload_hex,
-                signature: created.signature,
-                algorithm: "hmac-sha256".to_string(),
-            })
+            .verify_signature(VerifySignatureRequest::new(
+                secret,
+                payload_hex,
+                created.signature,
+                SignatureAlgorithm::HmacSha256,
+            ))
             .await
             .expect("verify signature");
 
@@ -859,37 +936,23 @@ mod tests {
             .expect("encrypt secret");
 
         let verified = client
-            .verify_signature(VerifySignatureRequest {
-                ciphertext: secret.ciphertext,
-                payload: hex::encode("payload"),
-                signature: hex::encode("wrong"),
-                algorithm: "hmac-sha256".to_string(),
-            })
+            .verify_signature(VerifySignatureRequest::new(
+                secret,
+                hex::encode("payload"),
+                hex::encode("wrong"),
+                SignatureAlgorithm::HmacSha256,
+            ))
             .await
             .expect("verify signature");
 
         assert!(!verified.verified);
     }
 
-    #[tokio::test]
-    async fn create_signature_rejects_unknown_algorithm() {
-        let client = make_client(config_no_auth(), None);
-        let secret = client.encrypt("whsec").await.expect("encrypt secret");
-        let error = client
-            .create_signature(CreateSignatureRequest {
-                ciphertext: secret.ciphertext,
-                payload: hex::encode("payload"),
-                algorithm: "unknown".to_string(),
-            })
-            .await
-            .expect_err("unknown algorithm should fail");
-        let body = assert_http_status(error, 500).expect("error body");
-        assert!(
-            body["error"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("unsupported signature algorithm")
-        );
+    #[test]
+    fn signature_algorithm_serializes_to_api_value() {
+        let value = serde_json::to_value(SignatureAlgorithm::HmacSha256)
+            .expect("signature algorithm should serialize");
+        assert_eq!(value, json!("hmac-sha256"));
     }
 
     #[tokio::test]
@@ -924,8 +987,7 @@ mod tests {
         let ciphertext = unrestricted_client
             .encrypt("secret")
             .await
-            .expect("encrypt")
-            .ciphertext;
+            .expect("encrypt");
 
         let error = restricted_client
             .rotate(ciphertext)
@@ -940,15 +1002,14 @@ mod tests {
         let ciphertext = make_client(config_no_auth(), None)
             .encrypt("secret")
             .await
-            .expect("encrypt")
-            .ciphertext;
+            .expect("encrypt");
         let error = client
-            .verify_signature(VerifySignatureRequest {
+            .verify_signature(VerifySignatureRequest::new(
                 ciphertext,
-                payload: hex::encode("payload"),
-                signature: hex::encode("sig"),
-                algorithm: "hmac-sha256".to_string(),
-            })
+                hex::encode("payload"),
+                hex::encode("sig"),
+                SignatureAlgorithm::HmacSha256,
+            ))
             .await
             .expect_err("verify should be forbidden");
         assert_http_status(error, 403);
@@ -963,14 +1024,13 @@ mod tests {
         let ciphertext = make_client(config_no_auth(), None)
             .encrypt("secret")
             .await
-            .expect("encrypt")
-            .ciphertext;
+            .expect("encrypt");
         let error = client
-            .create_signature(CreateSignatureRequest {
+            .create_signature(CreateSignatureRequest::new(
                 ciphertext,
-                payload: hex::encode("payload"),
-                algorithm: "hmac-sha256".to_string(),
-            })
+                hex::encode("payload"),
+                SignatureAlgorithm::HmacSha256,
+            ))
             .await
             .expect_err("sign should be forbidden");
         assert_http_status(error, 403);
@@ -982,7 +1042,7 @@ mod tests {
             config_with_operations_encrypt_only(),
             Some("encrypt-only-key"),
         );
-        let ciphertext = client.encrypt("secret").await.expect("encrypt").ciphertext;
+        let ciphertext = client.encrypt("secret").await.expect("encrypt");
         let error = client
             .proxy_substitute(ProxySubstituteRequest {
                 ciphertext,
@@ -1008,8 +1068,7 @@ mod tests {
         let ciphertext = client
             .encrypt("postgres://user:pass@db.internal:5432/app")
             .await
-            .expect("encrypt")
-            .ciphertext;
+            .expect("encrypt");
         let error = client
             .db_query(DbQueryRequest {
                 ciphertext,
@@ -1053,8 +1112,7 @@ mod tests {
         let ciphertext = client
             .encrypt("postgres://user:pass@db-blocked.internal:5432/app")
             .await
-            .expect("encrypt")
-            .ciphertext;
+            .expect("encrypt");
         let error = client
             .db_query(DbQueryRequest {
                 ciphertext,
@@ -1078,8 +1136,7 @@ mod tests {
         let ciphertext = make_client(config_no_auth(), None)
             .encrypt("postgres://user:pass@db.internal:5432/app")
             .await
-            .expect("encrypt")
-            .ciphertext;
+            .expect("encrypt");
         let error = client
             .db_query(DbQueryRequest {
                 ciphertext,
@@ -1406,7 +1463,7 @@ mod tests {
 
         client
             .db_query(DbQueryRequest {
-                ciphertext: clone_ciphertext(&ciphertext),
+                ciphertext: ciphertext.clone(),
                 query: DbQueryPayload {
                     sql: format!("insert into {} (id, n, t) values (1, $1, $2)", table),
                     params: Some(vec![TypedQueryParam::Null, TypedQueryParam::Null]),
@@ -1421,7 +1478,7 @@ mod tests {
 
         let result = client
             .db_query(DbQueryRequest {
-                ciphertext: clone_ciphertext(&ciphertext),
+                ciphertext: ciphertext.clone(),
                 query: DbQueryPayload {
                     sql: format!("select n, t from {} where id = 1", table),
                     params: None,
@@ -1439,7 +1496,7 @@ mod tests {
 
         client
             .db_query(DbQueryRequest {
-                ciphertext: clone_ciphertext(&ciphertext),
+                ciphertext: ciphertext.clone(),
                 query: DbQueryPayload {
                     sql: format!("insert into {} (id, n, t) values (2, $1, $2)", table),
                     params: Some(vec![TypedQueryParam::Int32(42), TypedQueryParam::Null]),
@@ -1487,7 +1544,7 @@ mod tests {
 
         client
             .db_query(DbQueryRequest {
-                ciphertext: clone_ciphertext(&ciphertext),
+                ciphertext: ciphertext.clone(),
                 query: DbQueryPayload {
                     sql: format!(
                         "insert into {} (id, b, i16, i32, i64, f64, txt, tstz, ts, d, tm, u, bts, j, jb) values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
@@ -1593,7 +1650,7 @@ mod tests {
 
         client
             .db_query(DbQueryRequest {
-                ciphertext: clone_ciphertext(&ciphertext),
+                ciphertext: ciphertext.clone(),
                 query: DbQueryPayload {
                     sql: format!(
                         "insert into {} (id, b, i16, i32, i64, f64, txt, tstz, ts, d, tm, u, bts, j, jb) values (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
