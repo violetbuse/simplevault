@@ -27,34 +27,16 @@ COPY src ./src
 RUN touch src/main.rs && cargo build --release && \
     strip /app/target/release/simplevault
 
-# Runtime stage - minimal debian-slim
-FROM debian:bookworm-slim
+# Runtime stage - distroless, non-root, no shell/package manager
+FROM gcr.io/distroless/cc-debian12:nonroot
 ARG SIMPLEVAULT_VERSION=0.1.0
 LABEL org.opencontainers.image.version="${SIMPLEVAULT_VERSION}"
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    acl \
-    bash \
-    ca-certificates \
-    jq \
-    libsodium23 \
-    netcat-openbsd \
-    passwd \
-    util-linux \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /app
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/simplevault /app/simplevault
-COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN chown root:root /app/simplevault /usr/local/bin/docker-entrypoint.sh && \
-    chmod 0111 /app/simplevault && \
-    chmod 0500 /usr/local/bin/docker-entrypoint.sh && \
-    chmod 0711 /app
-
-# Config must be provided via --config-env (JSON or base64-encoded JSON) or a mounted config file
+# For production secrets, prefer --config-env over a mounted config file.
 # Example: docker run -e SIMPLEVAULT_CONFIG="<json-or-base64>" simplevault --config-env SIMPLEVAULT_CONFIG
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["--config-env", "SIMPLEVAULT_CONFIG"]
+ENTRYPOINT ["/app/simplevault"]
+CMD ["--config-env", "SIMPLEVAULT_CONFIG", "--delete-env", "SIMPLEVAULT_CONFIG"]
