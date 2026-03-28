@@ -1,5 +1,5 @@
 use std::net::TcpListener;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgresql_embedded::{PostgreSQL, SettingsBuilder, VersionReq};
 
@@ -31,6 +31,7 @@ impl TestPg {
             .username(TEST_PG_USERNAME)
             .password(TEST_PG_PASSWORD)
             .temporary(true)
+            .timeout(Some(Duration::from_mins(5)))
             .build();
 
         let connection_string = settings.url(&database_name);

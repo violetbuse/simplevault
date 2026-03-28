@@ -34,13 +34,13 @@ done
 echo "=========================================="
 echo "1. Rust tests (cargo test)"
 echo "=========================================="
-cargo test --lib --features test-utils
+cargo test --lib --features test-utils --no-fail-fast
 
 echo ""
 echo "=========================================="
 echo "2. Rust client transport contract tests"
 echo "=========================================="
-cargo test --test client_contract --features test-utils
+cargo test --test client_contract --features test-utils --no-fail-fast
 
 echo ""
 echo "=========================================="
