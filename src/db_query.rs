@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
@@ -10,7 +10,7 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tokio_postgres::NoTls;
 use tokio_postgres::config::Host;
@@ -41,20 +41,54 @@ pub struct DbQueryResult {
 
 #[derive(Clone)]
 pub struct DbPoolCache {
-    entries: Arc<Mutex<HashMap<String, DbPoolEntry>>>,
+    entries: Arc<RwLock<HashMap<String, Arc<DbPoolEntry>>>>,
     idle_ttl: Duration,
 }
 
-#[derive(Clone)]
 struct DbPoolEntry {
-    pool: Pool,
-    last_used: Instant,
+    pool: StdMutex<Option<Pool>>,
+    last_used: StdMutex<Instant>,
+}
+
+impl DbPoolEntry {
+    fn new() -> Self {
+        Self {
+            pool: StdMutex::new(None),
+            last_used: StdMutex::new(Instant::now()),
+        }
+    }
+
+    fn touch(&self, now: Instant) {
+        *self
+            .last_used
+            .lock()
+            .expect("db pool entry last_used poisoned") = now;
+    }
+
+    fn is_idle(&self, now: Instant, idle_ttl: Duration) -> bool {
+        let last_used = *self
+            .last_used
+            .lock()
+            .expect("db pool entry last_used poisoned");
+        now.duration_since(last_used) > idle_ttl
+    }
+
+    fn get_or_create_pool(&self, connection_string: &str) -> Result<Pool, anyhow::Error> {
+        let mut guard = self.pool.lock().expect("db pool entry pool mutex poisoned");
+        if let Some(pool) = guard.as_ref() {
+            return Ok(pool.clone());
+        }
+
+        let pool = create_pool(connection_string)?;
+        *guard = Some(pool.clone());
+        Ok(pool)
+    }
 }
 
 impl DbPoolCache {
     pub fn new(idle_ttl: Duration, sweep_interval: Duration) -> Self {
         let cache = Self {
-            entries: Arc::new(Mutex::new(HashMap::new())),
+            entries: Arc::new(RwLock::new(HashMap::new())),
             idle_ttl,
         };
         cache.spawn_evictor(sweep_interval);
@@ -68,8 +102,8 @@ impl DbPoolCache {
             loop {
                 tokio::time::sleep(sweep_interval).await;
                 let now = Instant::now();
-                let mut guard = entries.lock().await;
-                guard.retain(|_, value| now.duration_since(value.last_used) <= idle_ttl);
+                let mut guard = entries.write().await;
+                guard.retain(|_, value| !value.is_idle(now, idle_ttl));
             }
         });
     }
@@ -79,23 +113,19 @@ impl DbPoolCache {
         pool_key: &str,
         connection_string: &str,
     ) -> Result<Pool, anyhow::Error> {
-        {
-            let mut guard = self.entries.lock().await;
-            if let Some(entry) = guard.get_mut(pool_key) {
-                entry.last_used = Instant::now();
-                return Ok(entry.pool.clone());
-            }
-        }
+        let now = Instant::now();
+        let entry = if let Some(entry) = self.entries.read().await.get(pool_key).cloned() {
+            entry
+        } else {
+            let mut guard = self.entries.write().await;
+            guard
+                .entry(pool_key.to_string())
+                .or_insert_with(|| Arc::new(DbPoolEntry::new()))
+                .clone()
+        };
 
-        let pool = create_pool(connection_string)?;
-
-        let mut guard = self.entries.lock().await;
-        let entry = guard.entry(pool_key.to_string()).or_insert(DbPoolEntry {
-            pool: pool.clone(),
-            last_used: Instant::now(),
-        });
-        entry.last_used = Instant::now();
-        Ok(entry.pool.clone())
+        entry.touch(now);
+        entry.get_or_create_pool(connection_string)
     }
 }
 
@@ -542,6 +572,7 @@ pub fn sanitize_connection_string(connection_string: &mut String) {
 mod tests {
     use super::*;
     use serde_json::{from_value, json};
+    use tokio::task::JoinSet;
 
     #[test]
     fn connection_string_hash_is_stable() {
@@ -589,5 +620,55 @@ mod tests {
             from_value::<TypedQueryParam>(json!({"type":"timestamptz","value":"not-a-timestamp"}))
                 .unwrap_err();
         assert!(!error.to_string().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn get_or_create_pool_reuses_entry_under_concurrency() {
+        let cache = DbPoolCache::new(Duration::from_secs(60), Duration::from_secs(60));
+        let connection_string = "postgres://user:pass@db.internal/app".to_string();
+        let pool_key = "shared".to_string();
+        let mut tasks = JoinSet::new();
+
+        for _ in 0..32 {
+            let cache = cache.clone();
+            let connection_string = connection_string.clone();
+            let pool_key = pool_key.clone();
+            tasks.spawn(async move {
+                cache
+                    .get_or_create_pool(&pool_key, &connection_string)
+                    .await
+                    .unwrap()
+            });
+        }
+
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+
+        let entries = cache.entries.read().await;
+        assert_eq!(entries.len(), 1);
+        let entry = entries.get(pool_key.as_str()).unwrap();
+        assert!(
+            entry
+                .pool
+                .lock()
+                .expect("db pool entry pool mutex poisoned")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn evictor_removes_idle_entries() {
+        let cache = DbPoolCache::new(Duration::from_millis(10), Duration::from_millis(5));
+
+        cache
+            .get_or_create_pool("stale", "postgres://user:pass@db.internal/app")
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        let entries = cache.entries.read().await;
+        assert!(entries.is_empty());
     }
 }
