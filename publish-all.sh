@@ -9,7 +9,8 @@
 #   1. Deploy docs to Cloudflare (via wrangler)
 #   2. Publish the client package to npm
 #   3. Publish the Docker image to GitHub Container Registry (GHCR)
-#   4. Create a GitHub release with the compiled binary attached
+#   4. Create a GitHub release with release archives attached (dist/simplevault-<VERSION>-*),
+#      or the Docker-extracted Linux binary only if those archives are missing
 #
 # Required tools (must already be logged in / configured as needed):
 #   - docker
@@ -73,6 +74,16 @@ if [[ ! -f target/release/simplevault ]]; then
   error "Binary target/release/simplevault not found. Run ./build-all.sh first."
 fi
 
+shopt -s nullglob
+RELEASE_ASSETS=(dist/simplevault-"${VERSION}"*.tar.gz dist/simplevault-"${VERSION}"*.zip)
+shopt -u nullglob
+
+if [[ ${#RELEASE_ASSETS[@]} -eq 0 ]]; then
+  RELEASE_ASSETS=(target/release/simplevault)
+  echo "Note: No dist/simplevault-${VERSION}-* archives found; uploading Docker-extracted Linux binary only."
+  echo "      For multi-platform assets, run: ./build-all.sh --release-binaries (before publish)."
+fi
+
 echo "=========================================="
 echo "1. Deploy docs to Cloudflare"
 echo "=========================================="
@@ -126,7 +137,7 @@ echo "Creating GitHub release '${GIT_TAG}' (or failing if it already exists)..."
 gh release create "${GIT_TAG}" \
   --title "simplevault ${GIT_TAG}" \
   --generate-notes \
-  target/release/simplevault
+  "${RELEASE_ASSETS[@]}"
 
 echo
 echo "=========================================="
