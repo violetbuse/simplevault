@@ -706,11 +706,24 @@ async fn proxy_substitute_handler(
                 .into_response();
         }
     };
+    let scheme = prepared.url.scheme();
+    let effective_port = match prepared.url.port_or_known_default() {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "error": "outbound url scheme has no default port" })),
+            )
+                .into_response();
+        }
+    };
     if !state.config.destination_allowed(
         &key_name,
         prepared.method.as_str(),
         host,
         prepared.url.path(),
+        scheme,
+        effective_port,
     ) {
         return (
             StatusCode::FORBIDDEN,
@@ -1351,6 +1364,138 @@ mod tests {
             .unwrap();
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    fn config_proxy_localhost_strict_and_wild() -> Config {
+        let json = r#"{
+            "api_keys": [],
+            "server_port": 8080,
+            "keys": {
+                "strictlocal": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+                "wildlocal": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+            },
+            "outbound_destinations": {
+                "strictlocal": [{ "host": "127.0.0.1", "path_prefix": "/", "methods": ["GET"] }],
+                "wildlocal": [{ "host": "127.0.0.1", "port": "*", "path_prefix": "/", "methods": ["GET"] }]
+            }
+        }"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn config_proxy_localhost_match_ports(match_port: u16, other_port: u16) -> Config {
+        let json = format!(
+            r#"{{
+            "api_keys": [],
+            "server_port": 8080,
+            "keys": {{
+                "matchport": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }},
+                "otherport": {{ "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }}
+            }},
+            "outbound_destinations": {{
+                "matchport": [{{ "host": "127.0.0.1", "port": {match_port}, "path_prefix": "/", "methods": ["GET"] }}],
+                "otherport": [{{ "host": "127.0.0.1", "port": {other_port}, "path_prefix": "/", "methods": ["GET"] }}]
+            }}
+        }}"#
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    fn spawn_minimal_http_127() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        listener.set_nonblocking(true).expect("set_nonblocking");
+        let port = listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::from_std(listener).expect("from_std");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 8192];
+                    let _ = stream.read(&mut buf).await;
+                    let body = r#"{"upstream":"ok"}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (port, handle)
+    }
+
+    async fn encrypt_for_key_router(app: &Router, key_name: &str, plaintext: &str) -> String {
+        let req = Request::post(format!("/v1/{}/encrypt", key_name))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "plaintext": plaintext }).to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "encrypt should succeed");
+        let body = read_body(resp).await;
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        v["ciphertext"].as_str().unwrap().to_string()
+    }
+
+    async fn proxy_substitute_outer_status(
+        app: &Router,
+        key_name: &str,
+        ciphertext: &str,
+        url: &str,
+    ) -> StatusCode {
+        let req = Request::post(format!("/v1/{}/proxy-substitute", key_name))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "ciphertext": ciphertext,
+                    "request": { "method": "GET", "url": url }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        resp.status()
+    }
+
+    #[tokio::test]
+    async fn proxy_substitute_default_outbound_port_denies_ephemeral_localhost_http() {
+        let app = build_router(config_proxy_localhost_strict_and_wild());
+        let (port, server) = spawn_minimal_http_127();
+        let ciphertext = encrypt_for_key_router(&app, "strictlocal", "x").await;
+        let url = format!("http://127.0.0.1:{}/", port);
+        let status = proxy_substitute_outer_status(&app, "strictlocal", &ciphertext, &url).await;
+        server.abort();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn proxy_substitute_outbound_port_star_allows_ephemeral_localhost_http() {
+        let app = build_router(config_proxy_localhost_strict_and_wild());
+        let (port, server) = spawn_minimal_http_127();
+        let ciphertext = encrypt_for_key_router(&app, "wildlocal", "x").await;
+        let url = format!("http://127.0.0.1:{}/", port);
+        let status = proxy_substitute_outer_status(&app, "wildlocal", &ciphertext, &url).await;
+        server.abort();
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn proxy_substitute_single_port_rule_matches_url_port() {
+        let (port, server) = spawn_minimal_http_127();
+        let other_port = if port < 65535 { port + 1 } else { port - 1 };
+        assert_ne!(other_port, port);
+        let app = build_router(config_proxy_localhost_match_ports(port, other_port));
+        let ct_match = encrypt_for_key_router(&app, "matchport", "a").await;
+        let ct_other = encrypt_for_key_router(&app, "otherport", "b").await;
+        let url = format!("http://127.0.0.1:{}/", port);
+        let ok = proxy_substitute_outer_status(&app, "matchport", &ct_match, &url).await;
+        let denied = proxy_substitute_outer_status(&app, "otherport", &ct_other, &url).await;
+        server.abort();
+        assert_eq!(ok, StatusCode::OK);
+        assert_eq!(denied, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

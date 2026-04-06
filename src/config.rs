@@ -64,12 +64,16 @@ impl Config {
         method: &str,
         host: &str,
         path: &str,
+        scheme: &str,
+        effective_port: u16,
     ) -> bool {
         let rules = match self.outbound_destinations.get(key_name) {
             Some(value) => value,
             None => return true,
         };
-        rules.iter().any(|rule| rule.matches(method, host, path))
+        rules
+            .iter()
+            .any(|rule| rule.matches(method, host, path, scheme, effective_port))
     }
 
     #[cfg(test)]
@@ -244,6 +248,76 @@ impl OperationsScopeInput {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum OutboundPortConstraint {
+    Any,
+    One(u16),
+    Many(Vec<u16>),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OutboundPortJson {
+    Many(Vec<u64>),
+    One(u64),
+    Wildcard(String),
+}
+
+fn parse_port_number<E: SerdeError>(n: u64) -> Result<u16, E> {
+    let p = u16::try_from(n).map_err(|_| SerdeError::custom("port must be between 1 and 65535"))?;
+    if p == 0 {
+        return Err(SerdeError::custom("port must be between 1 and 65535"));
+    }
+    Ok(p)
+}
+
+fn deserialize_outbound_port_opt<'de, D>(deserializer: D) -> Result<Option<OutboundPortConstraint>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<OutboundPortJson>::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(OutboundPortJson::Wildcard(s)) => {
+            if s == "*" {
+                Ok(Some(OutboundPortConstraint::Any))
+            } else {
+                Err(SerdeError::custom(
+                    "outbound destination port string must be \"*\"",
+                ))
+            }
+        }
+        Some(OutboundPortJson::One(n)) => Ok(Some(OutboundPortConstraint::One(parse_port_number(n)?))),
+        Some(OutboundPortJson::Many(vec)) => {
+            if vec.is_empty() {
+                return Err(SerdeError::custom(
+                    "outbound destination port array must not be empty",
+                ));
+            }
+            let mut ports = Vec::with_capacity(vec.len());
+            for n in vec {
+                ports.push(parse_port_number(n)?);
+            }
+            Ok(Some(OutboundPortConstraint::Many(ports)))
+        }
+    }
+}
+
+fn outbound_port_allows(
+    port: &Option<OutboundPortConstraint>,
+    scheme: &str,
+    effective_port: u16,
+) -> bool {
+    match port {
+        None => {
+            (scheme == "https" && effective_port == 443) || (scheme == "http" && effective_port == 80)
+        }
+        Some(OutboundPortConstraint::Any) => true,
+        Some(OutboundPortConstraint::One(n)) => *n == effective_port,
+        Some(OutboundPortConstraint::Many(v)) => v.iter().any(|p| *p == effective_port),
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct OutboundDestinationRule {
     pub host: String,
@@ -251,13 +325,26 @@ pub struct OutboundDestinationRule {
     pub path_prefix: Option<String>,
     #[serde(default)]
     pub methods: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_outbound_port_opt")]
+    pub port: Option<OutboundPortConstraint>,
 }
 
 impl OutboundDestinationRule {
-    fn matches(&self, method: &str, host: &str, path: &str) -> bool {
+    fn matches(
+        &self,
+        method: &str,
+        host: &str,
+        path: &str,
+        scheme: &str,
+        effective_port: u16,
+    ) -> bool {
         let normalized_rule_host = self.host.to_ascii_lowercase();
         let normalized_host = host.to_ascii_lowercase();
         if normalized_rule_host != normalized_host {
+            return false;
+        }
+
+        if !outbound_port_allows(&self.port, scheme, effective_port) {
             return false;
         }
 
@@ -733,9 +820,30 @@ mod tests {
             }
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert!(config.destination_allowed("vault", "POST", "api.stripe.com", "/v1/charges"));
-        assert!(!config.destination_allowed("vault", "GET", "api.stripe.com", "/v1/charges"));
-        assert!(!config.destination_allowed("vault", "POST", "api.stripe.com", "/v2/charges"));
+        assert!(config.destination_allowed(
+            "vault",
+            "POST",
+            "api.stripe.com",
+            "/v1/charges",
+            "https",
+            443
+        ));
+        assert!(!config.destination_allowed(
+            "vault",
+            "GET",
+            "api.stripe.com",
+            "/v1/charges",
+            "https",
+            443
+        ));
+        assert!(!config.destination_allowed(
+            "vault",
+            "POST",
+            "api.stripe.com",
+            "/v2/charges",
+            "https",
+            443
+        ));
     }
 
     #[test]
@@ -746,7 +854,441 @@ mod tests {
             "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } }
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert!(config.destination_allowed("vault", "GET", "example.com", "/"));
+        assert!(config.destination_allowed("vault", "GET", "example.com", "/", "https", 443));
+    }
+
+    #[test]
+    fn destination_policy_default_port_allows_only_scheme_defaults() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "api.example.com", "path_prefix": "/" } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example.com",
+            "/v1",
+            "https",
+            443
+        ));
+        assert!(!config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example.com",
+            "/v1",
+            "https",
+            8443
+        ));
+        assert!(config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example.com",
+            "/v1",
+            "http",
+            80
+        ));
+        assert!(!config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example.com",
+            "/v1",
+            "http",
+            8080
+        ));
+    }
+
+    #[test]
+    fn destination_policy_port_wildcard_allows_any_port() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "127.0.0.1", "port": "*", "path_prefix": "/" } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed(
+            "vault",
+            "GET",
+            "127.0.0.1",
+            "/echo",
+            "http",
+            53921
+        ));
+    }
+
+    #[test]
+    fn destination_policy_port_single_and_list() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [
+                    { "host": "one.port", "port": 8443 },
+                    { "host": "many.ports", "port": [443, 9000] }
+                ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.destination_allowed(
+            "vault",
+            "GET",
+            "one.port",
+            "/",
+            "https",
+            443
+        ));
+        assert!(config.destination_allowed(
+            "vault",
+            "GET",
+            "one.port",
+            "/",
+            "https",
+            8443
+        ));
+        assert!(config.destination_allowed(
+            "vault",
+            "GET",
+            "many.ports",
+            "/",
+            "https",
+            443
+        ));
+        assert!(config.destination_allowed(
+            "vault",
+            "GET",
+            "many.ports",
+            "/",
+            "https",
+            9000
+        ));
+        assert!(!config.destination_allowed(
+            "vault",
+            "GET",
+            "many.ports",
+            "/",
+            "https",
+            8443
+        ));
+    }
+
+    #[test]
+    fn destination_policy_port_null_same_as_omit() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "api.example.com", "port": null } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example.com",
+            "/",
+            "https",
+            443
+        ));
+        assert!(!config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example.com",
+            "/",
+            "https",
+            8443
+        ));
+    }
+
+    #[test]
+    fn destination_policy_rejects_empty_port_array() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "x.test", "port": [] } ]
+            }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("empty"),
+            "expected empty array error, got {}",
+            err
+        );
+    }
+
+    #[test]
+    fn destination_policy_rejects_invalid_port_string() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "x.test", "port": "any" } ]
+            }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("*") || err.to_string().contains("port"),
+            "expected port string error, got {}",
+            err
+        );
+    }
+
+    #[test]
+    fn destination_policy_rejects_port_zero() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "x.test", "port": 0 } ]
+            }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("65535") || err.to_string().contains("port"),
+            "expected port range error, got {}",
+            err
+        );
+    }
+
+    #[test]
+    fn destination_policy_rejects_port_above_u16() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "x.test", "port": 65536 } ]
+            }
+        }"#;
+        assert!(serde_json::from_str::<Config>(json).is_err());
+    }
+
+    #[test]
+    fn destination_policy_rejects_array_containing_zero_port() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "x.test", "port": [443, 0] } ]
+            }
+        }"#;
+        let err = serde_json::from_str::<Config>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("65535") || err.to_string().contains("port"),
+            "expected port range error, got {}",
+            err
+        );
+    }
+
+    #[test]
+    fn destination_policy_single_element_port_array_matches_like_explicit_port() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "h.test", "port": [8443] } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed(
+            "vault", "GET", "h.test", "/", "https", 8443
+        ));
+        assert!(!config.destination_allowed(
+            "vault", "GET", "h.test", "/", "https", 443
+        ));
+    }
+
+    #[test]
+    fn destination_policy_port_65535_allowed() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "edge.test", "port": 65535 } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed(
+            "vault", "GET", "edge.test", "/", "https", 65535
+        ));
+    }
+
+    #[test]
+    fn destination_policy_default_port_denies_non_http_https_scheme() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "ftp.example", "path_prefix": "/" } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.destination_allowed(
+            "vault", "GET", "ftp.example", "/", "ftp", 21
+        ));
+    }
+
+    #[test]
+    fn destination_policy_wildcard_denies_wrong_host() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "127.0.0.1", "port": "*", "path_prefix": "/" } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.destination_allowed(
+            "vault", "GET", "evil.com", "/", "http", 9999
+        ));
+    }
+
+    #[test]
+    fn destination_policy_multiple_rules_use_or_semantics() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [
+                    { "host": "127.0.0.1", "path_prefix": "/", "methods": ["GET"] },
+                    { "host": "127.0.0.1", "port": "*", "path_prefix": "/", "methods": ["GET"] }
+                ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed(
+            "vault", "GET", "127.0.0.1", "/", "http", 3000
+        ));
+        let json2 = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [
+                    { "host": "127.0.0.1", "port": "*", "path_prefix": "/", "methods": ["GET"] },
+                    { "host": "127.0.0.1", "path_prefix": "/", "methods": ["GET"] }
+                ]
+            }
+        }"#;
+        let config2: Config = serde_json::from_str(json2).unwrap();
+        assert!(config2.destination_allowed(
+            "vault", "GET", "127.0.0.1", "/", "http", 3000
+        ));
+        let json_strict_only = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [
+                    { "host": "127.0.0.1", "path_prefix": "/", "methods": ["GET"] },
+                    { "host": "127.0.0.1", "path_prefix": "/other", "methods": ["GET"] }
+                ]
+            }
+        }"#;
+        let config3: Config = serde_json::from_str(json_strict_only).unwrap();
+        assert!(!config3.destination_allowed(
+            "vault", "GET", "127.0.0.1", "/", "http", 3000
+        ));
+    }
+
+    #[test]
+    fn destination_policy_explicit_https_443_allowed_under_default_port_rule() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "api.example", "path_prefix": "/" } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example",
+            "/",
+            "https",
+            443
+        ));
+    }
+
+    #[test]
+    fn destination_policy_default_https_denies_port_80_even_if_host_matches() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "api.example", "path_prefix": "/" } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example",
+            "/",
+            "https",
+            80
+        ));
+    }
+
+    #[test]
+    fn destination_policy_port_checked_before_path_prefix() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "api.example", "port": 443, "path_prefix": "/v1/" } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.destination_allowed(
+            "vault",
+            "GET",
+            "api.example",
+            "/other",
+            "https",
+            8443
+        ));
+    }
+
+    #[test]
+    fn destination_policy_methods_still_enforced_with_port_star() {
+        let json = r#"{
+            "api_keys": ["k1"],
+            "server_port": 8080,
+            "keys": { "vault": { "1": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } },
+            "outbound_destinations": {
+                "vault": [ { "host": "127.0.0.1", "port": "*", "path_prefix": "/", "methods": ["POST"] } ]
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.destination_allowed(
+            "vault", "GET", "127.0.0.1", "/", "http", 5000
+        ));
+        assert!(config.destination_allowed(
+            "vault", "POST", "127.0.0.1", "/", "http", 5000
+        ));
     }
 
     #[test]

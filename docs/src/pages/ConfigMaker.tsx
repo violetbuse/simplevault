@@ -11,11 +11,16 @@ interface ApiKeyEntry {
   operations: "all" | Operation[];
 }
 
+type OutboundPortMode = "default" | "any" | "single" | "list";
+
 interface ConfigState {
   apiKeys: ApiKeyEntry[];
   serverPort: number;
   keyNames: Record<string, KeyVersions>;
-  outboundDestinations: Record<string, Array<{ host: string; path_prefix?: string; methods?: string[] }>>;
+  outboundDestinations: Record<
+    string,
+    Array<{ host: string; path_prefix?: string; methods?: string[]; port?: number | string | number[] }>
+  >;
   dbDestinations: Record<string, Array<{ host: string; port?: number; access?: "read_only" | "read_write" }>>;
 }
 
@@ -23,6 +28,37 @@ interface OutboundDestinationRule {
   host: string;
   path_prefix: string;
   methods: string[];
+  portMode: OutboundPortMode;
+  portSingle: string;
+  portList: string;
+}
+
+function emptyOutboundRule(): OutboundDestinationRule {
+  return {
+    host: "",
+    path_prefix: "",
+    methods: [],
+    portMode: "default",
+    portSingle: "",
+    portList: "",
+  };
+}
+
+function parseOutboundPortFromImport(portRaw: unknown): Pick<OutboundDestinationRule, "portMode" | "portSingle" | "portList"> {
+  if (portRaw === undefined || portRaw === null) {
+    return { portMode: "default", portSingle: "", portList: "" };
+  }
+  if (portRaw === "*") {
+    return { portMode: "any", portSingle: "", portList: "" };
+  }
+  if (typeof portRaw === "number" && Number.isInteger(portRaw)) {
+    return { portMode: "single", portSingle: String(portRaw), portList: "" };
+  }
+  if (Array.isArray(portRaw)) {
+    const nums = portRaw.filter((x): x is number => typeof x === "number" && Number.isInteger(x));
+    return { portMode: "list", portSingle: "", portList: nums.join(", ") };
+  }
+  return { portMode: "default", portSingle: "", portList: "" };
 }
 
 function generateHexKey(): string {
@@ -262,7 +298,7 @@ export default function ConfigMaker() {
   const addDestinationRule = useCallback((keySet: string) => {
     setOutboundDestinations((prev) => ({
       ...prev,
-      [keySet]: [...(prev[keySet] ?? []), { host: "", path_prefix: "", methods: [] }],
+      [keySet]: [...(prev[keySet] ?? []), emptyOutboundRule()],
     }));
   }, []);
 
@@ -279,10 +315,15 @@ export default function ConfigMaker() {
   }, []);
 
   const updateDestinationRule = useCallback(
-    (keySet: string, index: number, field: "host" | "path_prefix" | "methods", value: string | string[]) => {
+    (
+      keySet: string,
+      index: number,
+      field: "host" | "path_prefix" | "methods" | "portMode" | "portSingle" | "portList",
+      value: string | string[] | OutboundPortMode
+    ) => {
       setOutboundDestinations((prev) => {
         const rules = [...(prev[keySet] ?? [])];
-        const existing = rules[index] ?? { host: "", path_prefix: "", methods: [] };
+        const existing = rules[index] ?? emptyOutboundRule();
         rules[index] = {
           ...existing,
           [field]: value,
@@ -371,7 +412,10 @@ export default function ConfigMaker() {
   })();
   const configValid = serverPortValidation.valid && hasValidKeys;
   const normalizedOutboundDestinations = (() => {
-    const result: Record<string, Array<{ host: string; path_prefix?: string; methods?: string[] }>> = {};
+    const result: Record<
+      string,
+      Array<{ host: string; path_prefix?: string; methods?: string[]; port?: number | string | number[] }>
+    > = {};
     for (const keySet of Object.keys(outboundDestinations)) {
       const rules = outboundDestinations[keySet] ?? [];
       const normalizedRules = rules
@@ -380,13 +424,47 @@ export default function ConfigMaker() {
           if (!host) return null;
           const pathPrefix = rule.path_prefix.trim();
           const methods = rule.methods.map((m) => m.trim().toUpperCase()).filter((m) => m.length > 0);
+          let portField: { port?: number | string | number[] } = {};
+          if (rule.portMode === "any") {
+            portField = { port: "*" };
+          } else if (rule.portMode === "single") {
+            const n = parseInt(rule.portSingle.trim(), 10);
+            if (Number.isInteger(n) && n >= 1 && n <= 65535) {
+              portField = { port: n };
+            }
+          } else if (rule.portMode === "list") {
+            const parts = rule.portList
+              .split(",")
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0);
+            const nums: number[] = [];
+            for (const p of parts) {
+              const n = parseInt(p, 10);
+              if (Number.isInteger(n) && n >= 1 && n <= 65535) {
+                nums.push(n);
+              }
+            }
+            if (nums.length > 0) {
+              portField = { port: nums };
+            }
+          }
           return {
             host,
+            ...portField,
             ...(pathPrefix ? { path_prefix: pathPrefix } : {}),
             ...(methods.length > 0 ? { methods } : {}),
           };
         })
-        .filter((rule): rule is { host: string; path_prefix?: string; methods?: string[] } => rule !== null);
+        .filter(
+          (
+            rule
+          ): rule is {
+            host: string;
+            path_prefix?: string;
+            methods?: string[];
+            port?: number | string | number[];
+          } => rule !== null
+        );
       result[keySet] = normalizedRules;
     }
     return result;
@@ -537,7 +615,8 @@ export default function ConfigMaker() {
               const methods = Array.isArray(value.methods)
                 ? value.methods.filter((method): method is string => typeof method === "string")
                 : [];
-              return { host, path_prefix, methods };
+              const portParts = parseOutboundPortFromImport(value.port);
+              return { host, path_prefix, methods, ...portParts };
             })
             .filter((rule): rule is OutboundDestinationRule => rule !== null);
         }
@@ -792,7 +871,8 @@ export default function ConfigMaker() {
         </h2>
         <p className="text-[var(--text-muted)] text-sm mb-4">
           Configure per-key-set allow rules for <code className="bg-black/30 px-1 rounded">proxy-substitute</code>. Each rule
-          requires a host and can optionally restrict path prefix and methods.
+          requires a host and can optionally restrict path prefix, methods, and destination port (default: HTTPS 443 / HTTP 80
+          only; use &quot;any&quot; for arbitrary ports such as local test servers).
         </p>
         <div className="space-y-4">
           {Object.keys(keyNames).length === 0 && (
@@ -864,6 +944,40 @@ export default function ConfigMaker() {
                               placeholder="Path prefix (optional, e.g. /v1/)"
                               className="bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                             />
+                          </div>
+                          <div className="space-y-2">
+                            <span className="text-xs text-[var(--text-muted)] uppercase tracking-wide">Port</span>
+                            <select
+                              value={rule.portMode}
+                              onChange={(e) =>
+                                updateDestinationRule(keySet, idx, "portMode", e.target.value as OutboundPortMode)
+                              }
+                              className="w-full md:max-w-md bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                            >
+                              <option value="default">Default (443 HTTPS / 80 HTTP only)</option>
+                              <option value="any">Any port (*)</option>
+                              <option value="single">Single port</option>
+                              <option value="list">Port list</option>
+                            </select>
+                            {rule.portMode === "single" && (
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={rule.portSingle}
+                                onChange={(e) => updateDestinationRule(keySet, idx, "portSingle", e.target.value)}
+                                placeholder="e.g. 8443"
+                                className="w-full md:max-w-xs bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                              />
+                            )}
+                            {rule.portMode === "list" && (
+                              <input
+                                type="text"
+                                value={rule.portList}
+                                onChange={(e) => updateDestinationRule(keySet, idx, "portList", e.target.value)}
+                                placeholder="Comma-separated, e.g. 443, 8443, 9000"
+                                className="w-full bg-black/30 border border-[var(--border)] rounded-lg px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                              />
+                            )}
                           </div>
                           <div className="flex flex-wrap gap-3 items-center">
                             <span className="text-xs text-[var(--text-muted)] uppercase tracking-wide">Methods</span>

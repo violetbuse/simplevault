@@ -11,7 +11,7 @@ import express from 'express';
 import pg from 'pg';
 import * as crypto from './crypto.js';
 import { loadConfig } from './config.js';
-import type { ApiKeyConfigEntry, ApiKeyOperation, DevConfig } from './config.js';
+import type { ApiKeyConfigEntry, ApiKeyOperation, DevConfig, OutboundDestinationRule } from './config.js';
 
 function getLatestKey(
   config: DevConfig,
@@ -131,12 +131,52 @@ function resLocalApiKey(req: Request): ApiKeyConfigEntry | null {
   return (req.res?.locals?.authenticatedApiKey ?? null) as ApiKeyConfigEntry | null;
 }
 
+function effectiveOutboundSchemeAndPort(url: URL): { scheme: string; port: number } | null {
+  const scheme = url.protocol.endsWith(':') ? url.protocol.slice(0, -1) : url.protocol;
+  let port: number;
+  if (url.port !== '') {
+    port = parseInt(url.port, 10);
+    if (Number.isNaN(port)) {
+      return null;
+    }
+  } else if (scheme === 'https') {
+    port = 443;
+  } else if (scheme === 'http') {
+    port = 80;
+  } else {
+    return null;
+  }
+  return { scheme, port };
+}
+
+function outboundRulePortAllows(
+  rulePort: OutboundDestinationRule['port'],
+  scheme: string,
+  effectivePort: number
+): boolean {
+  if (rulePort === undefined || rulePort === null) {
+    return (scheme === 'https' && effectivePort === 443) || (scheme === 'http' && effectivePort === 80);
+  }
+  if (rulePort === '*') {
+    return true;
+  }
+  if (typeof rulePort === 'number') {
+    return rulePort === effectivePort;
+  }
+  if (Array.isArray(rulePort)) {
+    return rulePort.some((p) => p === effectivePort);
+  }
+  return false;
+}
+
 function destinationAllowed(
   config: DevConfig,
   keyName: string,
   method: string,
   host: string,
-  path: string
+  path: string,
+  scheme: string,
+  effectivePort: number
 ): boolean {
   const rules = config.outbound_destinations?.[keyName];
   if (!rules) {
@@ -144,6 +184,9 @@ function destinationAllowed(
   }
   return rules.some((rule) => {
     if (rule.host.toLowerCase() !== host.toLowerCase()) {
+      return false;
+    }
+    if (!outboundRulePortAllows(rule.port, scheme, effectivePort)) {
       return false;
     }
     if (rule.path_prefix && !path.startsWith(rule.path_prefix)) {
@@ -690,7 +733,23 @@ export function createDevServer(config: DevConfig): express.Application {
       return;
     }
 
-    if (!destinationAllowed(config, keyName, method, outboundUrl.hostname, outboundUrl.pathname)) {
+    const schemeAndPort = effectiveOutboundSchemeAndPort(outboundUrl);
+    if (!schemeAndPort) {
+      res.status(422).json({ error: 'outbound url scheme has no default port' });
+      return;
+    }
+
+    if (
+      !destinationAllowed(
+        config,
+        keyName,
+        method,
+        outboundUrl.hostname,
+        outboundUrl.pathname,
+        schemeAndPort.scheme,
+        schemeAndPort.port
+      )
+    ) {
       res.status(403).json({ error: 'destination is not allowed for this key set' });
       return;
     }

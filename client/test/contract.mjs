@@ -515,6 +515,56 @@ describe("SimpleVault API contract", () => {
       assert.ok(result.data?.error?.includes("destination is not allowed"));
     });
 
+    it("returns 403 for localhost HTTP on non-default port when outbound rule omits port", async () => {
+      const upstream = await startUpstreamServer();
+      try {
+        const enc = await request("POST", "/v1/strictlocal/encrypt", {
+          plaintext: "p",
+        });
+        assert.strictEqual(enc.status, 200, "encrypt strictlocal should succeed");
+        const result = await request("POST", "/v1/strictlocal/proxy-substitute", {
+          ciphertext: enc.data.ciphertext,
+          request: {
+            method: "GET",
+            url: `${upstream.baseUrl}/echo`,
+          },
+        });
+        assert.strictEqual(
+          result.status,
+          403,
+          `Expected 403 for ephemeral port without port allowlist, got ${result.status}`,
+        );
+        assert.ok(result.data?.error?.includes("destination is not allowed"));
+      } finally {
+        await upstream.stop();
+      }
+    });
+
+    it("returns 200 for localhost HTTP on non-default port when outbound rule has port *", async () => {
+      const upstream = await startUpstreamServer();
+      try {
+        const enc = await request("POST", "/v1/wildlocal/encrypt", {
+          plaintext: "p",
+        });
+        assert.strictEqual(enc.status, 200, "encrypt wildlocal should succeed");
+        const result = await request("POST", "/v1/wildlocal/proxy-substitute", {
+          ciphertext: enc.data.ciphertext,
+          request: {
+            method: "GET",
+            url: `${upstream.baseUrl}/echo`,
+          },
+        });
+        assert.strictEqual(
+          result.status,
+          200,
+          `Expected 200 with port *, got ${result.status}`,
+        );
+        assert.strictEqual(result.data?.status, 200);
+      } finally {
+        await upstream.stop();
+      }
+    });
+
     it("returns 403 when destination rules are empty for key set", async () => {
       const encrypted = await request("POST", "/v1/blocked/encrypt", {
         plaintext: "token_123",

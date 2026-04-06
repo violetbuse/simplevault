@@ -25,6 +25,8 @@ export interface OutboundDestinationRule {
   host: string;
   path_prefix?: string;
   methods?: string[];
+  /** Omitted or null: only default ports (443 https, 80 http). `"*"`: any port. */
+  port?: number | '*' | number[] | null;
 }
 
 export interface DbDestinationRule {

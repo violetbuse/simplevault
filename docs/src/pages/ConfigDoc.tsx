@@ -22,7 +22,8 @@ export default function ConfigDoc() {
   },
   "outbound_destinations": {
     "vault": [
-      { "host": "api.stripe.com", "path_prefix": "/v1/", "methods": ["POST"] }
+      { "host": "api.stripe.com", "path_prefix": "/v1/", "methods": ["POST"] },
+      { "host": "127.0.0.1", "port": "*", "path_prefix": "/" }
     ]
   },
   "db_destinations": {
@@ -82,11 +83,46 @@ export default function ConfigDoc() {
             <p className="text-[var(--text-muted)] text-sm mb-2">
               Optional map of key set name to outbound destination allowlist rules for <code className="bg-black/30 px-1 rounded">proxy-substitute</code>.
             </p>
-            <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1">
+            <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1 mb-3">
               <li>Key is the key set name (for example <code className="bg-black/30 px-1 rounded">vault</code>)</li>
-              <li>Each rule requires <code className="bg-black/30 px-1 rounded">host</code> and may include <code className="bg-black/30 px-1 rounded">path_prefix</code> and <code className="bg-black/30 px-1 rounded">methods</code></li>
+              <li>Each rule requires <code className="bg-black/30 px-1 rounded">host</code> and may include <code className="bg-black/30 px-1 rounded">path_prefix</code>, <code className="bg-black/30 px-1 rounded">methods</code>, and <code className="bg-black/30 px-1 rounded">port</code></li>
               <li>If this object is missing, destinations are allowed by default</li>
+              <li>If the key set exists with an empty rule list, all outbound destinations are denied for that key set</li>
             </ul>
+            <p className="text-sm text-[var(--text-muted)] mb-2 font-medium">
+              <code className="bg-black/30 px-1 rounded">port</code> (optional) controls which destination port the outbound URL may use. Matching uses the URL&apos;s effective port (including scheme defaults: 443 for <code className="bg-black/30 px-1 rounded">https</code>, 80 for <code className="bg-black/30 px-1 rounded">http</code>).
+            </p>
+            <div className="overflow-x-auto text-sm text-[var(--text-muted)] mb-2">
+              <table className="w-full border-collapse border border-[var(--border)]">
+                <thead>
+                  <tr className="bg-black/20">
+                    <th className="border border-[var(--border)] px-2 py-1 text-left font-mono">port value</th>
+                    <th className="border border-[var(--border)] px-2 py-1 text-left">Meaning</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="border border-[var(--border)] px-2 py-1 font-mono align-top">omitted or null</td>
+                    <td className="border border-[var(--border)] px-2 py-1">Only default ports: 443 for HTTPS, 80 for HTTP</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-[var(--border)] px-2 py-1 font-mono align-top">&quot;*&quot;</td>
+                    <td className="border border-[var(--border)] px-2 py-1">Any port (for example local HTTP on a random port)</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-[var(--border)] px-2 py-1 font-mono align-top">integer</td>
+                    <td className="border border-[var(--border)] px-2 py-1">Only that port (1–65535)</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-[var(--border)] px-2 py-1 font-mono align-top">array of integers</td>
+                    <td className="border border-[var(--border)] px-2 py-1">Any listed port; empty arrays are invalid</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="text-sm text-[var(--text-muted)]">
+              Other string values for <code className="bg-black/30 px-1 rounded">port</code> are rejected. Rules that previously matched any port now require <code className="bg-black/30 px-1 rounded">port</code> when the URL uses a non-default port (for example <code className="bg-black/30 px-1 rounded">https://host:8443</code>).
+            </p>
           </div>
 
           <div className="border border-[var(--border)] rounded-lg p-5 bg-[var(--surface-elevated)]">
@@ -122,7 +158,8 @@ export default function ConfigDoc() {
   },
   "outbound_destinations": {
     "vault": [
-      { "host": "api.stripe.com", "path_prefix": "/v1/", "methods": ["POST"] }
+      { "host": "api.stripe.com", "path_prefix": "/v1/", "methods": ["POST"] },
+      { "host": "127.0.0.1", "port": "*", "path_prefix": "/" }
     ]
   },
   "db_destinations": {
