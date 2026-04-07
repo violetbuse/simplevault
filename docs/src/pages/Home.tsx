@@ -13,8 +13,8 @@ export default function Home() {
       label: "GitHub Container Registry",
     },
     {
-      title: "Client library & dev server",
-      description: "npm package for the JavaScript client and local dev server",
+      title: "JavaScript client",
+      description: "npm package for the Node.js HTTP client (use the Rust binary as the server)",
       href: "https://www.npmjs.com/package/simplevault",
       label: "npm — simplevault",
     },
@@ -77,7 +77,7 @@ export default function Home() {
       </section>
 
       <p className="text-sm text-[var(--text-muted)]">
-        Use the sidebar to read about configuration, the API, and the client & dev server.
+        Use the sidebar to read about configuration, the API, and the JavaScript client.
       </p>
     </article>
   );

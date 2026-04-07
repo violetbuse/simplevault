@@ -1,20 +1,18 @@
 ---
-description: Keep client implementations and contract tests aligned with src API changes
+description: Keep client library and contract tests aligned with src API changes
 alwaysApply: true
 ---
 
 # Source to Client and Contract Sync
 
-When changes are made to the main code in `src/`, keep both client implementations and contract tests aligned with the new API/spec behavior.
+When changes are made to the main code in `src/`, keep the npm client and contract tests aligned with the new API/spec behavior.
 
 ## Required updates
 
-1. If API endpoints are added or changed, update the client library in `client/`.
-2. Keep the Node.js mirror implementation in `client/` aligned with the main implementation.
-3. If behavior/spec changes are relevant, update contract tests in `client/test/` so both implementations are validated against the same expectations.
+1. If API endpoints are added or changed, update the client library in `client/` (`SimpleVaultClient` and types).
+2. If behavior/spec changes are relevant, update contract tests in `client/test/` (run against the Rust binary via `run-with-rust-server.mjs` or a running server).
 
 ## Completion checklist
 
 - [ ] `client/` updated for endpoint/API changes
-- [ ] Node.js mirror implementation updated to match main behavior
 - [ ] `client/test/` contract tests updated when behavior/spec changed

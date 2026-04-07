@@ -11,7 +11,7 @@ const navLinks = [
   { to: "/config", label: "Config" },
   { to: "/config-maker", label: "Config Maker" },
   { to: "/api", label: "API Routes" },
-  { to: "/dev", label: "Client & Dev" },
+  { to: "/dev", label: "JS client" },
 ];
 
 function NavLinks({

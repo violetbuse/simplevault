@@ -1,7 +1,7 @@
 {
   "name": "simplevault",
-  "version": "0.5.10",
-  "description": "Client library and dev server for SimpleVault encryption API",
+  "version": "0.5.11",
+  "description": "Client library for the SimpleVault encryption API",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,9 +18,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/cli.ts",
     "test:contract": "node --test test/contract.mjs",
-    "test:contract:dev": "node test/run-with-dev-server.mjs",
     "test:contract:rust": "node test/run-with-rust-server.mjs",
     "prepublishOnly": "npm run build"
   },
@@ -39,16 +37,8 @@
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {
-    "commander": "^12.1.0",
-    "express": "^4.21.0",
-    "pg": "^8.16.3"
-  },
   "devDependencies": {
-    "@types/express": "^4.17.21",
     "@types/node": "^22.10.0",
-    "@types/pg": "^8.15.5",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
 }

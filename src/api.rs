@@ -229,7 +229,7 @@ where
     }
 }
 
-/// JSON extractor that returns `{ "error": "..." }` on rejection (matches dev server).
+/// JSON extractor that returns `{ "error": "..." }` on rejection (stable HTTP API shape).
 struct ApiJsonRejection(JsonRejection);
 
 impl IntoResponse for ApiJsonRejection {

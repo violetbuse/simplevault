@@ -45,17 +45,9 @@ if [ "$healthy" != "true" ]; then
   exit 1
 fi
 
-# echo "Running Rust tests with DB enabled..."
-# cargo test db_query_ -- --nocapture
-
-echo "Running contract tests against Node dev server..."
-cd client
-node test/run-with-dev-server.mjs
-
 echo "Building Rust release binary..."
-cd ..
 cargo build --release
 
-echo "Running contract tests against Rust server..."
+echo "Running contract tests against Rust server (with DB)..."
 cd client
 node test/run-with-rust-server.mjs

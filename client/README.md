@@ -1,6 +1,8 @@
 # simplevault
 
-Node.js client library and dev server for [SimpleVault](https://github.com/your-org/simplevault) — a minimal encryption API using AES-256-GCM.
+Node.js HTTP client for [SimpleVault](https://github.com/violetbuse/simplevault) — a minimal encryption API using AES-256-GCM.
+
+There is **no** JavaScript server in this package. For local development, run the **Rust** `simplevault` binary (see the main repo [README](https://github.com/violetbuse/simplevault) and [documentation](https://simplevault.viowet.com): install script, GitHub Releases, Docker, or `cargo run`), then point this client at that URL.
 
 ## Installation
 
@@ -8,7 +10,7 @@ Node.js client library and dev server for [SimpleVault](https://github.com/your-
 npm install simplevault
 ```
 
-## Client Library
+## Client library
 
 ```typescript
 import { SimpleVaultClient } from 'simplevault';
@@ -18,19 +20,11 @@ const client = new SimpleVaultClient({
   apiKey: 'optional-key', // omit if server has no api_keys
 });
 
-// Encrypt
 const { ciphertext } = await client.encrypt('vault', 'secret message');
-
-// Decrypt
 const { plaintext } = await client.decrypt('vault', ciphertext);
-
-// Key rotation (re-encrypt with latest key)
 const { ciphertext: rotated } = await client.rotate('vault', ciphertext);
-
-// Get latest key version
 const { version } = await client.getVersion('vault');
 
-// DB query typed params (including SQL NULL)
 const result = await client.dbQuery('vault', {
   ciphertext,
   query: {
@@ -44,54 +38,21 @@ const result = await client.dbQuery('vault', {
 });
 ```
 
-## CLI
+## Contract tests
 
-### init
-
-Create a default config file at `simplevault.config.json` (or a custom path):
+From the **repository root**, build the release binary, then from `client/`:
 
 ```bash
-npx simplevault init
-npx simplevault init -o ./my-config.json
+npm ci
+npm run build
+node test/run-with-rust-server.mjs
 ```
 
-### dev
-
-Start the dev server for local development. Emulates the full SimpleVault API with simplified configuration.
+Or with a server already running:
 
 ```bash
-# Uses simplevault.config.json if present, else built-in defaults
-npx simplevault
-npx simplevault dev
-
-# Custom port
-npx simplevault --port 3000
-
-# Custom config path
-npx simplevault --config ./config.json
+SIMPLEVAULT_BASE_URL=http://localhost:8080 npm run test:contract
 ```
-
-### Config format
-
-```json
-{
-  "api_keys": [],
-  "server_port": 8080,
-  "keys": {
-    "vault": {
-      "1": "64-char-hex-aes-key",
-      "2": "64-char-hex-aes-key"
-    }
-  }
-}
-```
-
-- `api_keys`: empty = no auth; non-empty = require Bearer / x-api-key / ?api_key=
-- `keys`: key name → version → 64-char hex (256-bit AES key)
-
-## API Compatibility
-
-The dev server is compatible with the Rust SimpleVault service. Ciphertext produced by one can be decrypted by the other when using the same keys.
 
 ## License
 

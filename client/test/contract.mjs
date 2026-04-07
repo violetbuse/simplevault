@@ -1,6 +1,6 @@
 /**
  * Contract tests for SimpleVault API.
- * Run against dev server or Rust production server to verify behavior matches.
+ * Run against a running server (usually the Rust binary), or use test/run-with-rust-server.mjs.
  *
  * Usage:
  *   SIMPLEVAULT_BASE_URL=http://localhost:8080 node --test test/contract.mjs

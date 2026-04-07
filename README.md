@@ -9,7 +9,7 @@ Full documentation is published at [simplevault.viowet.com](https://simplevault.
 - **Configuration** — JSON config (file or base64 env var), `api_keys`, `server_port`, versioned keys (64-char hex). For production secrets, prefer env-based config over mounted files. Options to delete config after reading, override port, and use Docker.
 - **Config Maker** — Interactive tool to build config, generate hex keys, and export as JSON or Base64 for env/Docker.
 - **API Routes** — `POST /v1/{key_name}/encrypt`, `POST /v1/{key_name}/decrypt`, `POST /v1/{key_name}/rotate`, `GET /v1/{key_name}/version`. Optional API key auth via Bearer, `x-api-key`, or `?api_key=`. Ciphertext format `v<version>:<hex>:<nonce>`.
-- **Client & Dev Server** — npm package `simplevault`: `SimpleVaultClient` for Node and a local dev server that emulates the API for development.
+- **JavaScript client** — npm package `simplevault`: `SimpleVaultClient` for Node; run the Rust server locally and point `baseUrl` at it.
 
 ## Rust server (this repo)
 
@@ -22,9 +22,9 @@ The server is implemented in Rust in the `src/` directory:
 
 Config can be removed or unset after startup so it does not remain on disk or in the process environment.
 
-## Client and dev server
+## JavaScript client
 
-The npm package [simplevault](https://www.npmjs.com/package/simplevault) provides a Node.js client (`SimpleVaultClient`) and a CLI dev server (`npx simplevault` or `npx simplevault dev`) that implements the same API for local use. Ciphertext is compatible between the Rust server and the dev server when using the same keys.
+The npm package [simplevault](https://www.npmjs.com/package/simplevault) provides a Node.js HTTP client (`SimpleVaultClient`). For development, run the Rust binary (install script, a release download, or `cargo run`) and set the client `baseUrl` to that server.
 
 ## Running the server
 
@@ -47,5 +47,5 @@ See the [documentation](https://simplevault.viowet.com) for detailed configurati
 - Documentation: [simplevault.viowet.com](https://simplevault.viowet.com)
 - Releases (built binaries): [GitHub Releases](https://github.com/violetbuse/simplevault/releases)
 - Docker image: [GitHub Container Registry](https://github.com/users/violetbuse/packages/container/package/simplevault)
-- npm package (client + dev server): [npm — simplevault](https://www.npmjs.com/package/simplevault)
+- npm package (JavaScript client): [npm — simplevault](https://www.npmjs.com/package/simplevault)
 - Source: [github.com/violetbuse/simplevault](https://github.com/violetbuse/simplevault)
