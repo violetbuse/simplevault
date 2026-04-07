@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build release archives for multiple platforms (runs locally; uses Docker via cross).
+# The dist/ directory is removed and recreated first so no stale artifacts remain.
 #
 # Archives written to dist/:
 #   simplevault-<VERSION>-x86_64-unknown-linux-gnu.tar.gz
@@ -47,8 +48,9 @@ if [[ -z "$VERSION" ]]; then
   error "VERSION file is empty"
 fi
 
+echo "Clearing dist/"
+rm -rf dist
 mkdir -p dist
-rm -f dist/simplevault-"${VERSION}"-*.tar.gz dist/simplevault-"${VERSION}"-*.zip
 
 CROSS_TARGETS=(
   x86_64-unknown-linux-gnu
