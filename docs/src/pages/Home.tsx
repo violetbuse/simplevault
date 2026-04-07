@@ -2,7 +2,7 @@ export default function Home() {
   const links = [
     {
       title: "Releases (built binaries)",
-      description: "Pre-built server binaries for Linux",
+      description: "Pre-built server binaries (Linux, Windows; macOS arm64 when published)",
       href: "https://github.com/violetbuse/simplevault/releases",
       label: "GitHub Releases",
     },
@@ -32,6 +32,25 @@ export default function Home() {
       <p className="text-[var(--text-muted)] mb-10">
         Documentation and quick links for the SimpleVault encryption vault server and client.
       </p>
+
+      <section className="mb-10">
+        <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Install server (Unix)</h2>
+        <p className="text-[var(--text-muted)] mb-4 text-sm">
+          On Linux (x86_64 or arm64) or Apple Silicon macOS, this script downloads the latest binary from{" "}
+          <a href="https://github.com/violetbuse/simplevault/releases" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
+            GitHub Releases
+          </a>
+          , installs to <code className="bg-black/30 px-1 rounded">~/.local/bin</code> by default, and skips work when you already have the latest version (use <code className="bg-black/30 px-1 rounded">--force</code> to reinstall).
+        </p>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-3">
+{`curl -fsSL https://raw.githubusercontent.com/violetbuse/simplevault/master/install.sh | bash`}
+        </pre>
+        <p className="text-sm text-[var(--text-muted)]">
+          See <code className="bg-black/30 px-1 rounded">install.sh --help</code> for <code className="bg-black/30 px-1 rounded">--prefix</code>,{" "}
+          <code className="bg-black/30 px-1 rounded">SIMPLEVAULT_INSTALL_PREFIX</code>, and{" "}
+          <code className="bg-black/30 px-1 rounded">SIMPLEVAULT_INSTALL_REPO</code>. Intel Macs have no macOS x64 archive; use Docker or build from source.
+        </p>
+      </section>
 
       <section className="mb-10">
         <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Quick links</h2>

@@ -178,11 +178,18 @@ export default function ConfigDoc() {
       <section className="mb-10">
         <h2 className="text-xl font-semibold mb-4 text-[var(--accent)]">Usage</h2>
         <p className="text-[var(--text-muted)] mb-4">
-          Pre-built binaries are available on <a href="https://github.com/violetbuse/simplevault/releases" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">GitHub Releases</a>. Config can be read from a file or from an environment variable. By default, the config source (file or env var) is deleted/unset after reading for security. Use <code className="bg-black/30 px-1 rounded">--keep-config</code> to retain it.
+          Pre-built binaries are available on <a href="https://github.com/violetbuse/simplevault/releases" target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">GitHub Releases</a>. On Linux (x86_64, aarch64) or Apple Silicon macOS you can install or upgrade with the repo&apos;s <code className="bg-black/30 px-1 rounded">install.sh</code> (it compares <code className="bg-black/30 px-1 rounded">simplevault --version</code> to the latest release and skips when up to date unless you pass <code className="bg-black/30 px-1 rounded">--force</code>).
+        </p>
+        <pre className="bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg p-4 sm:p-6 overflow-x-auto text-sm font-mono mb-4">
+{`curl -fsSL https://raw.githubusercontent.com/violetbuse/simplevault/master/install.sh | bash`}
+        </pre>
+        <p className="text-[var(--text-muted)] mb-4 text-sm">
+          Intel Macs do not have a published macOS x64 archive; use Docker, build from source, or a manual download from the releases page. Config can be read from a file or from an environment variable. By default, the config source (file or env var) is deleted/unset after reading for security. Use <code className="bg-black/30 px-1 rounded">--keep-config</code> to retain it.
         </p>
 
         <h3 className="font-semibold mb-2 text-[var(--accent)]">CLI options</h3>
         <ul className="text-sm text-[var(--text-muted)] list-disc list-inside space-y-1 mb-4">
+          <li><code className="bg-black/30 px-1 rounded">--version</code> / <code className="bg-black/30 px-1 rounded">-V</code> — Print version and exit</li>
           <li><code className="bg-black/30 px-1 rounded">--port</code> / <code className="bg-black/30 px-1 rounded">-p</code> — Port to listen on (overrides <code className="bg-black/30 px-1 rounded">server_port</code> from config)</li>
         </ul>
 

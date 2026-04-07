@@ -28,7 +28,15 @@ The npm package [simplevault](https://www.npmjs.com/package/simplevault) provide
 
 ## Running the server
 
-- **Built binaries**: [GitHub Releases](https://github.com/violetbuse/simplevault/releases). Download the binary for your platform and run e.g. `./simplevault config.json`.
+- **Install script (Linux x86_64/arm64, macOS Apple Silicon)**: downloads the latest release, installs to `~/.local/bin` by default, and on later runs skips install when already up to date (use `--force` to reinstall).
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/violetbuse/simplevault/master/install.sh | bash
+  ```
+
+  Options: `--prefix DIR`, `--force`, `--dry-run`. Override repo with `SIMPLEVAULT_INSTALL_REPO=owner/name` or install dir with `SIMPLEVAULT_INSTALL_PREFIX`.
+
+- **Built binaries**: [GitHub Releases](https://github.com/violetbuse/simplevault/releases). Download the archive for your platform and run e.g. `./simplevault config.json`. Intel Macs do not ship a pre-built archive; use Docker, build from source, or the Linux binary via another environment.
 - **Docker**: [GitHub Container Registry — simplevault](https://github.com/users/violetbuse/packages/container/package/simplevault). The image runs directly as a non-root user. For production, pass config via `SIMPLEVAULT_CONFIG` (JSON or base64) rather than a mounted config file so the container does not depend on a persistent on-disk secret.
 - **From source**: `cargo run -- config.json` or `cargo run -- --config-env SIMPLEVAULT_CONFIG`. Use `--port` to override the port, `--keep-config` to keep the config source after reading. Prefer `--config-env` for production secrets; file-based deletion depends on the runtime user being allowed to overwrite and remove the source file.
 

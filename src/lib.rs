@@ -14,7 +14,7 @@ use clap::Parser;
 use config::{read_config, read_config_from_env, resolve_config_path, unset_env_var};
 
 #[derive(Parser)]
-#[command(about)]
+#[command(name = "simplevault", version, about)]
 struct Args {
     /// Path to the config file (absolute or relative)
     #[arg(required_unless_present = "config_env")]
