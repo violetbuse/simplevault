@@ -1,0 +1,102 @@
+{
+  "api_keys": [
+    {
+      "value": "contract-test-key",
+      "keys": "all",
+      "operations": "all"
+    },
+    {
+      "value": "limited-contract-key",
+      "keys": [
+        "limited"
+      ],
+      "operations": [
+        "encrypt",
+        "decrypt"
+      ]
+    },
+    {
+      "value": "readonly-contract-key",
+      "keys": [
+        "readonly"
+      ],
+      "operations": [
+        "encrypt",
+        "db_query"
+      ]
+    }
+  ],
+  "server_port": 8080,
+  "keys": {
+    "vault": {
+      "1": "0000000000000000000000000000000000000000000000000000000000000000",
+      "2": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "limited": {
+      "1": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "blocked": {
+      "1": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "readonly": {
+      "1": "4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "strictlocal": {
+      "1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "wildlocal": {
+      "1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "outbound_destinations": {
+    "vault": [
+      {
+        "host": "127.0.0.1",
+        "port": "*",
+        "path_prefix": "/echo",
+        "methods": [
+          "GET",
+          "POST"
+        ]
+      }
+    ],
+    "strictlocal": [
+      {
+        "host": "127.0.0.1",
+        "path_prefix": "/echo",
+        "methods": [
+          "GET",
+          "POST"
+        ]
+      }
+    ],
+    "wildlocal": [
+      {
+        "host": "127.0.0.1",
+        "port": "*",
+        "path_prefix": "/echo",
+        "methods": [
+          "GET",
+          "POST"
+        ]
+      }
+    ],
+    "blocked": []
+  },
+  "db_destinations": {
+    "vault": [
+      {
+        "host": "127.0.0.1",
+        "port": 55432
+      }
+    ],
+    "blocked": [],
+    "readonly": [
+      {
+        "host": "127.0.0.1",
+        "port": 55432,
+        "access": "read_only"
+      }
+    ]
+  }
+}

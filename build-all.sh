@@ -3,15 +3,15 @@
 # Build all SimpleVault artifacts:
 #   1. Docker image (includes Rust release binary)
 #   2. Extract binary from image to target/release/
-#   3. Optional: multi-platform release archives (see --release-binaries)
+#   3. Multi-platform release archives in dist/ (skip with --no-release-binaries)
 #   4. Docs site
 #   5. Client library
 #
-# Usage: ./build-all.sh [--docker-tag TAG] [--release-binaries]
-#   --docker-tag TAG     Use TAG for the Docker image (default: simplevault:$(cat VERSION))
-#   --release-binaries   Also run scripts/build-release-binaries.sh (Docker + cross + zip;
-#                        produces dist/simplevault-<VERSION>-* for Linux x64/arm64, Windows x64,
-#                        and on Apple Silicon Mac also macOS arm64)
+# Usage: ./build-all.sh [--docker-tag TAG] [--no-release-binaries]
+#   --docker-tag TAG        Use TAG for the Docker image (default: simplevault:$(cat VERSION))
+#   --no-release-binaries   Skip scripts/build-release-binaries.sh (by default this runs:
+#                           Docker + cross + zip; produces dist/simplevault-<VERSION>-* for
+#                           Linux x64/arm64, Windows x64, and on Apple Silicon Mac also macOS arm64)
 #
 
 set -e
@@ -26,12 +26,16 @@ echo "=========================================="
 
 VERSION=$(cat VERSION | tr -d '[:space:]')
 DOCKER_TAG="simplevault:${VERSION}"
-BUILD_RELEASE_BINARIES=0
+BUILD_RELEASE_BINARIES=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --docker-tag)
       DOCKER_TAG="$2"
       shift 2
+      ;;
+    --no-release-binaries)
+      BUILD_RELEASE_BINARIES=0
+      shift
       ;;
     --release-binaries)
       BUILD_RELEASE_BINARIES=1
@@ -91,7 +95,9 @@ echo ""
 echo "Artifacts:"
 echo "  - Rust binary:  target/release/simplevault"
 if [[ "$BUILD_RELEASE_BINARIES" -eq 1 ]]; then
-  echo "  - Release zips: dist/simplevault-${VERSION}-* (Linux x64/arm64, Windows x64; + macOS arm64 on Apple Silicon)"
+  echo "  - Release archives: dist/simplevault-${VERSION}-* (Linux x64/arm64, Windows x64; + macOS arm64 on Apple Silicon)"
+else
+  echo "  - Release archives: skipped (--no-release-binaries)"
 fi
 echo "  - Docker image: $DOCKER_TAG"
 echo "  - Docs site:    docs/dist/"

@@ -3,14 +3,16 @@
 # Publish all SimpleVault artifacts after they have been built by ./build-all.sh
 #
 # Prerequisites (run manually before this script):
-#   ./build-all.sh
+#   ./build-all.sh   (builds dist/simplevault-<VERSION>-* release archives by default)
 #
 # This script will:
 #   1. Deploy docs to Cloudflare (via wrangler)
 #   2. Publish the client package to npm
 #   3. Publish the Docker image to GitHub Container Registry (GHCR)
-#   4. Create a GitHub release with release archives attached (dist/simplevault-<VERSION>-*),
-#      or the Docker-extracted Linux binary only if those archives are missing
+#   4. Create a GitHub release with dist/simplevault-<VERSION>-* archives attached
+#      (use --linux-binary-only if you built with ./build-all.sh --no-release-binaries)
+#
+# Usage: ./publish-all.sh [--linux-binary-only]
 #
 # Required tools (must already be logged in / configured as needed):
 #   - docker
@@ -22,6 +24,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+LINUX_BINARY_ONLY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --linux-binary-only)
+      LINUX_BINARY_ONLY=1
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
 
 error() {
   echo "Error: $*" >&2
@@ -79,9 +94,12 @@ RELEASE_ASSETS=(dist/simplevault-"${VERSION}"*.tar.gz dist/simplevault-"${VERSIO
 shopt -u nullglob
 
 if [[ ${#RELEASE_ASSETS[@]} -eq 0 ]]; then
-  RELEASE_ASSETS=(target/release/simplevault)
-  echo "Note: No dist/simplevault-${VERSION}-* archives found; uploading Docker-extracted Linux binary only."
-  echo "      For multi-platform assets, run: ./build-all.sh --release-binaries (before publish)."
+  if [[ "$LINUX_BINARY_ONLY" -eq 1 ]]; then
+    RELEASE_ASSETS=(target/release/simplevault)
+    echo "Note: Publishing Docker-extracted Linux binary only (--linux-binary-only)."
+  else
+    error "No dist/simplevault-${VERSION}-* archives found. Run ./build-all.sh (release archives are built by default), or pass --linux-binary-only to attach only target/release/simplevault."
+  fi
 fi
 
 echo "=========================================="

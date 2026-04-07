@@ -164,6 +164,7 @@ pub fn parse_connection_targets(
     for (index, host) in hosts.iter().enumerate() {
         let hostname = match host {
             Host::Tcp(value) => value.clone(),
+            #[cfg(unix)]
             Host::Unix(_) => {
                 return Err(anyhow::anyhow!(
                     "unix socket connections are not supported for db-query"
